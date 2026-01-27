@@ -45,8 +45,8 @@ def get_vad_model() -> object | None:
         logger.info("加载 Silero VAD 模型中（onnx=True）...")
         _VAD_MODEL = load_silero_vad(onnx=True)
         logger.info("Silero VAD 模型加载完成。")
-    except Exception:
-        logger.info("未安装/无法加载 silero_vad，将使用固定分段切分。")
+    except Exception as e:
+        logger.info("未安装/无法加载 silero_vad，将使用固定分段切分。原因: %s", e)
         _VAD_MODEL = None
     return _VAD_MODEL
 

@@ -170,8 +170,114 @@ def process_vad(
         return segmented_wavs, False
 
 
+def process_vad_speech(
+    wav: np.ndarray,
+    worker_vad_model: object,
+    *,
+    max_utterance_s: int = 20,
+    merge_gap_ms: int = 300,
+) -> list[tuple[int, int, np.ndarray]]:
+    """
+    Split by VAD speech regions (better subtitle time alignment).
+
+    - merge_gap_ms: merge adjacent speech regions if silence gap is short.
+    - max_utterance_s: cap each region length; long regions are subdivided.
+    """
+    if get_speech_timestamps is None:
+        raise RuntimeError("silero_vad is not available.")
+
+    vad_params = {
+        "sampling_rate": WAV_SAMPLE_RATE,
+        "return_seconds": False,
+        "min_speech_duration_ms": 300,
+        "min_silence_duration_ms": 200,
+    }
+    timestamps = get_speech_timestamps(wav, worker_vad_model, **vad_params)
+    if not timestamps:
+        return []
+
+    # Merge close regions.
+    merged: list[tuple[int, int]] = []
+    gap_samples = int(merge_gap_ms * WAV_SAMPLE_RATE / 1000)
+    for ts in timestamps:
+        start = int(ts["start"])
+        end = int(ts["end"])
+        if not merged:
+            merged.append((start, end))
+            continue
+        last_start, last_end = merged[-1]
+        if start - last_end <= gap_samples:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+
+    # Subdivide long regions.
+    max_samples = int(max_utterance_s) * WAV_SAMPLE_RATE
+    regions: list[tuple[int, int, np.ndarray]] = []
+    for start, end in merged:
+        if end <= start:
+            continue
+        if max_samples > 0 and (end - start) > max_samples:
+            cur = start
+            while cur < end:
+                nxt = min(cur + max_samples, end)
+                regions.append((cur, nxt, wav[cur:nxt]))
+                cur = nxt
+        else:
+            regions.append((start, end, wav[start:end]))
+    return regions
+
+
 def save_audio_file(wav: np.ndarray, file_path: str) -> None:
     dir_name = os.path.dirname(file_path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
     sf.write(file_path, wav, WAV_SAMPLE_RATE)
+
+
+def transcode_wav_to_mp3(
+    *,
+    input_wav_path: str,
+    output_mp3_path: str,
+    bitrate_kbps: int = 64,
+) -> str:
+    """
+    Convert a WAV file to MP3 with ffmpeg.
+
+    This is mainly used to avoid upstream file size limits (PCM WAV is large).
+    """
+    bitrate_kbps = max(8, int(bitrate_kbps))
+    cmd = [
+        _ffmpeg_bin(),
+        "-y",
+        "-i",
+        input_wav_path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(WAV_SAMPLE_RATE),
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        f"{bitrate_kbps}k",
+        output_mp3_path,
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, check=True)
+    except FileNotFoundError as e:
+        raise RuntimeError("未找到 ffmpeg，无法进行 MP3 转码。") from e
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode("utf-8", errors="ignore")
+        raise RuntimeError(f"ffmpeg 转码失败：{stderr}") from e
+    return output_mp3_path
+
+
+__all__ = [
+    "WAV_SAMPLE_RATE",
+    "load_audio",
+    "process_vad",
+    "process_vad_speech",
+    "save_audio_file",
+    "transcode_wav_to_mp3",
+]

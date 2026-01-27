@@ -49,6 +49,24 @@ DEFAULT_VAD_SEGMENT_THRESHOLD_S = _clamp_int(
 DEFAULT_VAD_MAX_SEGMENT_THRESHOLD_S = _clamp_int(
     _int(_SAVED_CONFIG.get("vad_max_segment_threshold_s"), 180), 60, 360
 )
+DEFAULT_TIMELINE_STRATEGY = _str(_SAVED_CONFIG.get("timeline_strategy", "vad_speech")).strip()
+if DEFAULT_TIMELINE_STRATEGY not in {"chunk", "vad_speech"}:
+    DEFAULT_TIMELINE_STRATEGY = "vad_speech"
+
+DEFAULT_UPLOAD_AUDIO_FORMAT = _str(_SAVED_CONFIG.get("upload_audio_format", "mp3")).strip()
+if DEFAULT_UPLOAD_AUDIO_FORMAT not in {"wav", "mp3"}:
+    DEFAULT_UPLOAD_AUDIO_FORMAT = "mp3"
+
+DEFAULT_UPLOAD_MP3_BITRATE_KBPS = _clamp_int(
+    _int(_SAVED_CONFIG.get("upload_mp3_bitrate_kbps"), 64), 16, 192
+)
+
+DEFAULT_VAD_SPEECH_MAX_UTTERANCE_S = _clamp_int(
+    _int(_SAVED_CONFIG.get("vad_speech_max_utterance_s"), 20), 5, 60
+)
+DEFAULT_VAD_SPEECH_MERGE_GAP_MS = _clamp_int(
+    _int(_SAVED_CONFIG.get("vad_speech_merge_gap_ms"), 300), 0, 2000
+)
 DEFAULT_REMEMBER_API_KEY = bool(DEFAULT_OPENAI_API_KEY)
 INITIAL_CONFIG_STATUS = (
     f"配置文件：`{_CONFIG_PATH}`"
@@ -73,6 +91,11 @@ def run_asr(
     enable_vad: bool,
     vad_segment_threshold_s: int,
     vad_max_segment_threshold_s: int,
+    timeline_strategy: str,
+    vad_speech_max_utterance_s: int,
+    vad_speech_merge_gap_ms: int,
+    upload_audio_format: str,
+    upload_mp3_bitrate_kbps: int,
 ):
     if not audio_path:
         raise gr.Error("请先上传或录制一段音频。")
@@ -86,7 +109,7 @@ def run_asr(
 
     logger.info(
         "收到转写请求: file=%s, format=%s, language=%s, model=%s, base_url=%s, "
-        "enable_vad=%s, target=%ss, max=%ss",
+        "enable_vad=%s, target=%ss, max=%ss, timeline_strategy=%s, upload=%s",
         audio_path,
         output_format,
         lang or "auto",
@@ -95,6 +118,8 @@ def run_asr(
         enable_vad,
         vad_segment_threshold_s,
         vad_max_segment_threshold_s,
+        timeline_strategy,
+        f"{upload_audio_format}/{int(upload_mp3_bitrate_kbps)}k",
     )
 
     try:
@@ -109,6 +134,11 @@ def run_asr(
             enable_vad=enable_vad,
             vad_segment_threshold_s=int(vad_segment_threshold_s),
             vad_max_segment_threshold_s=int(vad_max_segment_threshold_s),
+            timeline_strategy=(timeline_strategy or "").strip() or "vad_speech",
+            vad_speech_max_utterance_s=int(vad_speech_max_utterance_s),
+            vad_speech_merge_gap_ms=int(vad_speech_merge_gap_ms),
+            upload_audio_format=(upload_audio_format or "").strip() or "mp3",
+            upload_mp3_bitrate_kbps=int(upload_mp3_bitrate_kbps),
         )
     except Exception as e:
         raise gr.Error(f"转写失败：{e}") from e
@@ -125,6 +155,11 @@ def save_settings(
     enable_vad: bool,
     vad_segment_threshold_s: int,
     vad_max_segment_threshold_s: int,
+    timeline_strategy: str,
+    vad_speech_max_utterance_s: int,
+    vad_speech_merge_gap_ms: int,
+    upload_audio_format: str,
+    upload_mp3_bitrate_kbps: int,
     remember_api_key: bool,
 ) -> str:
     config = {
@@ -133,6 +168,11 @@ def save_settings(
         "model": (model or "").strip() or "whisper-1",
         "openai_base_url": (openai_base_url or "").strip(),
         "output_format": (output_format or "").strip() or "srt",
+        "timeline_strategy": (timeline_strategy or "").strip() or "vad_speech",
+        "upload_audio_format": (upload_audio_format or "").strip() or "mp3",
+        "upload_mp3_bitrate_kbps": int(upload_mp3_bitrate_kbps),
+        "vad_speech_max_utterance_s": int(vad_speech_max_utterance_s),
+        "vad_speech_merge_gap_ms": int(vad_speech_merge_gap_ms),
         "vad_max_segment_threshold_s": int(vad_max_segment_threshold_s),
         "vad_segment_threshold_s": int(vad_segment_threshold_s),
     }
@@ -159,6 +199,11 @@ def clear_settings():
         True,
         120,
         180,
+        "vad_speech",
+        20,
+        300,
+        "mp3",
+        64,
         False,
         msg,
     )
@@ -173,6 +218,9 @@ with gr.Blocks(title="auto-asr（OpenAI 转字幕）", theme=gr.themes.Ocean()) 
                 "",
                 "- API 配置在页面中填写，不依赖环境变量。",
                 "- 长音频自动切分：内置切分算法（源自 Qwen3-ASR-Toolkit，MIT）。",
+                "- 若上游不返回 segments（无时间戳），可用 VAD 语音段模式生成更准的字幕轴。",
+                "- 语音段模式会增加调用次数（按语音段逐段转写）。",
+                "- 部分上游对音频文件大小有限制，建议上传格式选 MP3 压缩。",
                 "- 如需真正的 VAD（Silero），安装：`uv sync --extra vad`（体积大，会拉 PyTorch）。",
             ]
         )
@@ -245,7 +293,7 @@ with gr.Blocks(title="auto-asr（OpenAI 转字幕）", theme=gr.themes.Ocean()) 
 
     with gr.Accordion("长音频切分", open=True):
         enable_vad = gr.Checkbox(
-            value=DEFAULT_ENABLE_VAD, label="启用切分（音频 >= 180 秒时生效）"
+            value=DEFAULT_ENABLE_VAD, label="启用 VAD（用于长音频切分 / 语音段模式）"
         )
         vad_segment_threshold_s = gr.Slider(
             minimum=30,
@@ -260,6 +308,47 @@ with gr.Blocks(title="auto-asr（OpenAI 转字幕）", theme=gr.themes.Ocean()) 
             value=DEFAULT_VAD_MAX_SEGMENT_THRESHOLD_S,
             step=10,
             label="最大分段时长（秒）",
+        )
+
+    with gr.Accordion("字幕轴（上游无 segments 时）", open=True):
+        timeline_strategy = gr.Dropdown(
+            choices=[
+                ("按 VAD 语音段（更准，调用更多）", "vad_speech"),
+                ("按分段整段（省调用，可能粗）", "chunk"),
+            ],
+            value=DEFAULT_TIMELINE_STRATEGY,
+            label="时间轴策略",
+        )
+        vad_speech_max_utterance_s = gr.Slider(
+            minimum=5,
+            maximum=60,
+            value=DEFAULT_VAD_SPEECH_MAX_UTTERANCE_S,
+            step=1,
+            label="语音段最大时长（秒）",
+        )
+        vad_speech_merge_gap_ms = gr.Slider(
+            minimum=0,
+            maximum=2000,
+            value=DEFAULT_VAD_SPEECH_MERGE_GAP_MS,
+            step=50,
+            label="合并相邻语音段的静音阈值（毫秒）",
+        )
+
+    with gr.Accordion("上传优化（避免上游文件过大）", open=False):
+        upload_audio_format = gr.Dropdown(
+            choices=[
+                ("MP3 压缩（推荐）", "mp3"),
+                ("WAV 无压缩（可能触发上游大小限制）", "wav"),
+            ],
+            value=DEFAULT_UPLOAD_AUDIO_FORMAT,
+            label="上传音频格式",
+        )
+        upload_mp3_bitrate_kbps = gr.Slider(
+            minimum=16,
+            maximum=192,
+            value=DEFAULT_UPLOAD_MP3_BITRATE_KBPS,
+            step=16,
+            label="MP3 码率（kbps）",
         )
 
     run_btn = gr.Button("开始转写")
@@ -285,6 +374,11 @@ with gr.Blocks(title="auto-asr（OpenAI 转字幕）", theme=gr.themes.Ocean()) 
             enable_vad,
             vad_segment_threshold_s,
             vad_max_segment_threshold_s,
+            timeline_strategy,
+            vad_speech_max_utterance_s,
+            vad_speech_merge_gap_ms,
+            upload_audio_format,
+            upload_mp3_bitrate_kbps,
         ],
         outputs=[preview, full_text, out_file, debug],
     )
@@ -300,6 +394,11 @@ with gr.Blocks(title="auto-asr（OpenAI 转字幕）", theme=gr.themes.Ocean()) 
             enable_vad,
             vad_segment_threshold_s,
             vad_max_segment_threshold_s,
+            timeline_strategy,
+            vad_speech_max_utterance_s,
+            vad_speech_merge_gap_ms,
+            upload_audio_format,
+            upload_mp3_bitrate_kbps,
             remember_api_key,
         ],
         outputs=[config_status],
@@ -317,6 +416,11 @@ with gr.Blocks(title="auto-asr（OpenAI 转字幕）", theme=gr.themes.Ocean()) 
             enable_vad,
             vad_segment_threshold_s,
             vad_max_segment_threshold_s,
+            timeline_strategy,
+            vad_speech_max_utterance_s,
+            vad_speech_merge_gap_ms,
+            upload_audio_format,
+            upload_mp3_bitrate_kbps,
             remember_api_key,
             config_status,
         ],
