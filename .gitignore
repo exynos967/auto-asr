@@ -10,3 +10,4 @@ outputs/
 *.mp4
 *.log
 .env
+.auto_asr_config.json
