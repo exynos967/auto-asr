@@ -35,7 +35,22 @@ def _needs_trust_remote_code(model: str) -> bool:
     """
 
     m = (model or "").lower()
-    return "sensevoice" in m
+    return ("sensevoice" in m) or ("fun-asr-nano" in m) or ("funasrnano" in m)
+
+
+def _remote_code_candidates(model: str) -> list[str]:
+    """
+    Candidate `remote_code` values for FunASR AutoModel.
+
+    Some repos (e.g. Fun-ASR-Nano) ship model definitions in `model.py` and are not registered in
+    FunASR's built-in registry. In that case AutoModel needs `trust_remote_code=True` and a proper
+    `remote_code` hint.
+    """
+
+    m = (model or "").lower()
+    if ("fun-asr-nano" in m) or ("funasrnano" in m):
+        return ["./model.py", "model.py"]
+    return []
 
 
 def _is_not_registered_error(exc: BaseException) -> bool:
@@ -129,6 +144,7 @@ def _make_model(cfg: FunASRConfig) -> Any:
 
     AutoModel = _import_funasr()
     trust_remote_code = _needs_trust_remote_code(cfg.model)
+    remote_code_candidates = _remote_code_candidates(cfg.model)
 
     model_kwargs: dict[str, Any] = {
         "model": cfg.model,
@@ -138,6 +154,8 @@ def _make_model(cfg: FunASRConfig) -> Any:
         # FunASR 会在初始化时做版本更新检查 (可能较慢), 这里默认禁用。
         "disable_update": True,
     }
+    if trust_remote_code and remote_code_candidates:
+        model_kwargs["remote_code"] = remote_code_candidates[0]
 
     # Try to enable built-in VAD / punctuation when requested. These are common in FunASR.
     if cfg.enable_vad:
@@ -150,16 +168,39 @@ def _make_model(cfg: FunASRConfig) -> Any:
         model = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
     except Exception as e:
         _raise_if_missing_tokenizers_deps(e)
-        if (not trust_remote_code) and _is_not_registered_error(e):
-            logger.warning(
-                "FunASR 模型未注册，尝试启用 trust_remote_code 重试: model=%s", cfg.model
-            )
-            model_kwargs["trust_remote_code"] = True
-            try:
-                model = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
-            except Exception as e2:
-                _raise_if_missing_tokenizers_deps(e2)
-                raise
+        if _is_not_registered_error(e):
+            if not model_kwargs.get("trust_remote_code"):
+                logger.warning(
+                    "FunASR 模型未注册，尝试启用 trust_remote_code 重试: model=%s", cfg.model
+                )
+                model_kwargs["trust_remote_code"] = True
+                if remote_code_candidates and "remote_code" not in model_kwargs:
+                    model_kwargs["remote_code"] = remote_code_candidates[0]
+                try:
+                    model = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+                except Exception as e2:
+                    _raise_if_missing_tokenizers_deps(e2)
+                    raise
+            else:
+                # trust_remote_code=True but still not registered: try different remote_code values.
+                if not remote_code_candidates:
+                    raise
+                last_exc: Exception = e
+                for cand in remote_code_candidates:
+                    if model_kwargs.get("remote_code") == cand:
+                        continue
+                    logger.warning(
+                        "FunASR 模型未注册，尝试 remote_code=%s 重试: model=%s", cand, cfg.model
+                    )
+                    model_kwargs["remote_code"] = cand
+                    try:
+                        model = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+                        break
+                    except Exception as e2:
+                        _raise_if_missing_tokenizers_deps(e2)
+                        last_exc = e2
+                else:  # no break
+                    raise last_exc
         else:
             raise
     _MODEL_CACHE[key] = model
@@ -481,6 +522,7 @@ def download_funasr_model(
 
     AutoModel = _import_funasr()
     trust_remote_code = _needs_trust_remote_code(model)
+    remote_code_candidates = _remote_code_candidates(model)
     model_kwargs: dict[str, Any] = {
         "model": model,
         "device": "cpu",
@@ -488,6 +530,8 @@ def download_funasr_model(
         # FunASR 会在初始化时做版本更新检查 (可能较慢), 这里默认禁用。
         "disable_update": True,
     }
+    if trust_remote_code and remote_code_candidates:
+        model_kwargs["remote_code"] = remote_code_candidates[0]
     if enable_vad:
         model_kwargs["vad_model"] = "fsmn-vad"
         model_kwargs["vad_kwargs"] = {"max_single_segment_time": 60000}
@@ -498,14 +542,38 @@ def download_funasr_model(
         _ = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
     except Exception as e:
         _raise_if_missing_tokenizers_deps(e)
-        if (not trust_remote_code) and _is_not_registered_error(e):
-            logger.warning("FunASR 模型未注册，尝试启用 trust_remote_code 重试: model=%s", model)
-            model_kwargs["trust_remote_code"] = True
-            try:
-                _ = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
-            except Exception as e2:
-                _raise_if_missing_tokenizers_deps(e2)
-                raise
+        if _is_not_registered_error(e):
+            if not model_kwargs.get("trust_remote_code"):
+                logger.warning(
+                    "FunASR 模型未注册，尝试启用 trust_remote_code 重试: model=%s", model
+                )
+                model_kwargs["trust_remote_code"] = True
+                if remote_code_candidates and "remote_code" not in model_kwargs:
+                    model_kwargs["remote_code"] = remote_code_candidates[0]
+                try:
+                    _ = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+                except Exception as e2:
+                    _raise_if_missing_tokenizers_deps(e2)
+                    raise
+            else:
+                if not remote_code_candidates:
+                    raise
+                last_exc: Exception = e
+                for cand in remote_code_candidates:
+                    if model_kwargs.get("remote_code") == cand:
+                        continue
+                    logger.warning(
+                        "FunASR 模型未注册，尝试 remote_code=%s 重试: model=%s", cand, model
+                    )
+                    model_kwargs["remote_code"] = cand
+                    try:
+                        _ = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+                        break
+                    except Exception as e2:
+                        _raise_if_missing_tokenizers_deps(e2)
+                        last_exc = e2
+                else:
+                    raise last_exc
         else:
             raise
     logger.info(
