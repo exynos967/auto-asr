@@ -3,7 +3,7 @@ name = "auto-asr"
 version = "0.1.0"
 description = "Gradio UI for OpenAI ASR -> SRT/VTT/TXT"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     "gradio",
     "openai",
@@ -21,7 +21,7 @@ dev = ["ruff", "pytest"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py310"
 extend-exclude = ["Qwen3-ASR-Toolkit", "GPT-SoVITS"]
 
 [tool.ruff.lint]

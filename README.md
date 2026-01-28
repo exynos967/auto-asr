@@ -21,6 +21,22 @@ uv sync
 uv sync --extra funasr
 ```
 
+Windows + Python 3.12 可能会遇到 `llvmlite/numba` 依赖不兼容导致安装失败（例如报错 *Cannot install on Python version 3.12*）。
+建议改用 Python 3.11（或 3.10）创建环境后再安装：
+
+```bash
+# 安装/使用指定 Python 版本（示例：3.11）
+uv python install 3.11
+uv sync --extra funasr -p 3.11
+```
+
+如需使用 NVIDIA 显卡（CUDA）加速本地推理，可额外安装 CUDA 版 PyTorch（示例：CUDA 12.1；按你的驱动/CUDA 版本选择对应的 cuXXX）：
+
+```bash
+# 示例：安装 CUDA 12.1 版 torch（含 torchaudio）
+uv pip install --upgrade --index-url https://download.pytorch.org/whl/cu121 torch torchaudio
+```
+
 ## Run
 
 ```bash
