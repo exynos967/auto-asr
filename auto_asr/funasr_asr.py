@@ -10,6 +10,8 @@ from auto_asr.openai_asr import ASRResult, ASRSegment
 
 logger = logging.getLogger(__name__)
 
+_PUNCT_END = set(".!?。！？")
+
 
 @dataclass(frozen=True)
 class FunASRConfig:
@@ -181,6 +183,61 @@ def _extract_segments_from_result(res: Any, *, duration_s: float) -> tuple[str, 
         item = res[0]
         full_text = _maybe_postprocess_text(str(item.get("text", "") or ""))
 
+        def _scale_ts(max_end: float) -> float:
+            # Many FunASR models return timestamps in milliseconds.
+            return 0.001 if max_end > max(duration_s, 1.0) * 10 else 1.0
+
+        def _merge_caption_units(
+            units: list[tuple[float, float, str]],
+            *,
+            joiner: str = "",
+            max_chars: int = 28,
+            max_dur_s: float = 6.0,
+        ) -> list[ASRSegment]:
+            merged: list[ASRSegment] = []
+            buf_text: list[str] = []
+            buf_start: float | None = None
+            buf_end: float | None = None
+
+            def _flush() -> None:
+                nonlocal buf_text, buf_start, buf_end
+                if not buf_text or buf_start is None or buf_end is None:
+                    buf_text = []
+                    buf_start = None
+                    buf_end = None
+                    return
+                text = joiner.join(buf_text).strip()
+                if text:
+                    merged.append(ASRSegment(start_s=buf_start, end_s=buf_end, text=text))
+                buf_text = []
+                buf_start = None
+                buf_end = None
+
+            for start_s, end_s, t in units:
+                t = _maybe_postprocess_text(t)
+                if not t:
+                    continue
+                if buf_start is None:
+                    buf_start = start_s
+                buf_end = end_s
+                buf_text.append(t)
+
+                cur_text = joiner.join(buf_text)
+                cur_dur = (
+                    (buf_end - buf_start)
+                    if (buf_end is not None and buf_start is not None)
+                    else 0.0
+                )
+                if (
+                    (cur_text and cur_text[-1] in _PUNCT_END)
+                    or len(cur_text) >= max_chars
+                    or cur_dur >= max_dur_s
+                ):
+                    _flush()
+
+            _flush()
+            return merged
+
         sent_info = item.get("sentence_info") or item.get("stamp_sents")
         if isinstance(sent_info, list) and sent_info:
             raw: list[tuple[float, float, str]] = []
@@ -201,11 +258,111 @@ def _extract_segments_from_result(res: Any, *, duration_s: float) -> tuple[str, 
 
             if raw:
                 max_end = max(e for _s, e, _t in raw)
-                scale = 0.001 if max_end > max(duration_s, 1.0) * 10 else 1.0
+                scale = _scale_ts(max_end)
                 segments = [
                     ASRSegment(start_s=s * scale, end_s=e * scale, text=t) for (s, e, t) in raw
                 ]
                 return full_text, segments
+
+        # Case 1b: `timestamp` (word/token level timestamps). Seen in some FunASR models.
+        timestamp = item.get("timestamp")
+        if isinstance(timestamp, list) and timestamp:
+            token_entries: list[tuple[float, float, str]] = []
+            for it in timestamp:
+                # Common formats:
+                # - [start_ms, end_ms]
+                # - [token, start_s, end_s]
+                # - [token, start_ms, end_ms]
+                if isinstance(it, (list, tuple)):
+                    if len(it) >= 3 and isinstance(it[0], str):
+                        token = it[0]
+                        try:
+                            start = float(it[1])
+                            end = float(it[2])
+                        except Exception:
+                            continue
+                        token_entries.append((start, end, token))
+                    elif len(it) >= 2:
+                        try:
+                            start = float(it[0])
+                            end = float(it[1])
+                        except Exception:
+                            continue
+                        # If no token is provided, we fall back to splitting by whitespace later.
+                        token_entries.append((start, end, ""))
+                elif isinstance(it, dict):
+                    start = it.get("start", it.get("begin_time", it.get("start_time", None)))
+                    end = it.get("end", it.get("end_time", it.get("finish_time", None)))
+                    token = it.get("text", it.get("token", ""))
+                    if start is None or end is None:
+                        continue
+                    try:
+                        token_entries.append((float(start), float(end), str(token or "")))
+                    except Exception:
+                        continue
+
+            if token_entries:
+                max_end = max(e for _s, e, _t in token_entries)
+                scale = _scale_ts(max_end)
+                token_entries = [(s * scale, e * scale, t) for (s, e, t) in token_entries]
+
+                # If timestamp entries include tokens, do a simple SentencePiece-style merge.
+                if any(t for _s, _e, t in token_entries):
+                    words: list[tuple[float, float, str]] = []
+                    cur_word = ""
+                    cur_start: float | None = None
+                    cur_end: float | None = None
+
+                    def _flush_word() -> None:
+                        nonlocal cur_word, cur_start, cur_end
+                        if cur_word and cur_start is not None and cur_end is not None:
+                            words.append((cur_start, cur_end, cur_word))
+                        cur_word = ""
+                        cur_start = None
+                        cur_end = None
+
+                    for s, e, tok in token_entries:
+                        tok = str(tok or "")
+                        if tok == "▁":
+                            continue
+                        is_new = tok.startswith("▁")
+                        piece = tok[1:] if is_new else tok
+                        if is_new and cur_word:
+                            _flush_word()
+                        if cur_start is None:
+                            cur_start = s
+                        cur_end = e
+                        cur_word += piece
+
+                    _flush_word()
+                    # SentencePiece-style markers (e.g. "▁") indicate word boundaries.
+                    # Use a space joiner for latin words, otherwise keep it compact for CJK.
+                    joiner = " " if any(re.search(r"[A-Za-z]", w) for _s, _e, w in words) else ""
+                    segments = _merge_caption_units(words, joiner=joiner)
+                    if segments:
+                        logger.info(
+                            "FunASR timestamp parsed (token->word): words=%d, segments=%d",
+                            len(words),
+                            len(segments),
+                        )
+                        merged_text = "\n".join(seg.text for seg in segments).strip() or full_text
+                        return merged_text, segments
+
+                # No token text: fall back to whitespace split.
+                tokens = [t for t in re.split(r"\s+", full_text) if t]
+                if len(tokens) == len(token_entries):
+                    units: list[tuple[float, float, str]] = []
+                    for tok, (s, e, _t) in zip(tokens, token_entries, strict=False):
+                        units.append((s, e, tok))
+                    segments = _merge_caption_units(units, joiner=" ")
+                    if segments:
+                        logger.info(
+                            "FunASR timestamp parsed (whitespace tokens): tokens=%d, segments=%d",
+                            len(tokens),
+                            len(segments),
+                        )
+                        merged_text = "\n".join(seg.text for seg in segments).strip() or full_text
+                        return merged_text, segments
 
         return full_text, []
 

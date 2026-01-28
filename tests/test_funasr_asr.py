@@ -40,3 +40,20 @@ def test_extract_segments_list_of_dict_seconds_kept():
 def test_maybe_postprocess_text_strips_sensevoice_rich_tags_without_gt():
     raw = "< | ja |  < | EMO _ UNKNOWN |  < | S pe ech |  < | withi tn | hello"
     assert _maybe_postprocess_text(raw) == "hello"
+
+
+def test_extract_segments_timestamp_tokens_sentencepiece_like():
+    res = [
+        {
+            "text": "< | ja |  < | EMO _ UNKNOWN |  < | S pe ech |  < | withi tn | hello world",
+            "timestamp": [
+                ["▁hello", 0.0, 0.5],
+                ["▁world", 0.6, 1.0],
+            ],
+        }
+    ]
+    full_text, segments = _extract_segments_from_result(res, duration_s=10.0)
+    assert full_text == "hello world"
+    assert segments
+    assert segments[0].start_s == 0.0
+    assert segments[-1].end_s == 1.0
