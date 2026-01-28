@@ -72,10 +72,12 @@ def _maybe_postprocess_text(text: str) -> str:
     # 我们先把这些带空格的标签规整成 "<|...|>", 再尝试使用官方后处理移除它们。
     def _normalize_rich_tags(s: str) -> str:
         def _repl(m: re.Match[str]) -> str:
-            inner = re.sub(r"\\s+", "", m.group(1))
+            inner = re.sub(r"\s+", "", m.group(1))
             return f"<|{inner}|>"
 
-        return re.sub(r"<\\s*\\|\\s*([^|<>]+?)\\s*\\|\\s*>", _repl, s)
+        # Some upstream outputs miss the trailing ">" (e.g. "< | ja |  < | ... |"),
+        # so we make it optional here to keep normalization robust.
+        return re.sub(r"<\s*\|\s*([^|<>]+?)\s*\|\s*>?", _repl, s)
 
     text = _normalize_rich_tags(text)
     try:
@@ -89,8 +91,9 @@ def _maybe_postprocess_text(text: str) -> str:
 
     # Best-effort: strip remaining tags if upstream postprocess didn't remove them,
     # or when importing the postprocess helper failed.
-    text = re.sub(r"<\\|[^|<>]+?\\|>", "", text)
-    return re.sub(r"\\s{2,}", " ", text).strip()
+    # Remove both normalized "<|...|>" and loose "< | ... |" variants.
+    text = re.sub(r"<\s*\|\s*[^|<>]+?\s*\|\s*>?", "", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 
 def _filter_kwargs(func: Any, kwargs: dict[str, Any]) -> dict[str, Any]:

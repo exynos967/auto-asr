@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from auto_asr.funasr_asr import _extract_segments_from_result
+from auto_asr.funasr_asr import _extract_segments_from_result, _maybe_postprocess_text
 
 
 def test_extract_segments_sentence_info_ms_scaled_to_seconds():
@@ -35,3 +35,8 @@ def test_extract_segments_list_of_dict_seconds_kept():
         (0.0, 1.2, "a"),
         (1.2, 2.0, "b"),
     ]
+
+
+def test_maybe_postprocess_text_strips_sensevoice_rich_tags_without_gt():
+    raw = "< | ja |  < | EMO _ UNKNOWN |  < | S pe ech |  < | withi tn | hello"
+    assert _maybe_postprocess_text(raw) == "hello"
