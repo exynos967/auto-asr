@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from threading import Event, Lock
 
 import gradio as gr
 
 from auto_asr.config import get_config_path, load_config, save_config
+from auto_asr.funasr_asr import download_funasr_model, preload_funasr_model
 from auto_asr.pipeline import transcribe_to_subtitles
 
 logging.basicConfig(
@@ -135,6 +137,61 @@ logger.info(
     bool(DEFAULT_OPENAI_API_KEY),
 )
 logger.info("auto-asr CUDA 检测: available=%s, details=%s", CUDA_AVAILABLE, CUDA_DETAILS)
+
+_CANCEL_LOCK = Lock()
+_CURRENT_CANCEL_EVENT: Event | None = None
+
+
+def _set_current_cancel_event(ev: Event | None) -> None:
+    global _CURRENT_CANCEL_EVENT
+    with _CANCEL_LOCK:
+        _CURRENT_CANCEL_EVENT = ev
+
+
+def stop_transcribe() -> str:
+    with _CANCEL_LOCK:
+        ev = _CURRENT_CANCEL_EVENT
+    if ev is None:
+        return "当前没有正在进行的转写。"
+    ev.set()
+    logger.info("收到停止转写请求。")
+    return "已发送停止信号（后台会尽快停止）。"
+
+
+def _resolve_funasr_device_ui(device: str) -> str:
+    d = (device or "").strip()
+    if d in {"", "auto"}:
+        return "cuda:0" if CUDA_AVAILABLE else "cpu"
+    return d
+
+
+def load_funasr_model_ui(
+    funasr_model: str,
+    funasr_device: str,
+    funasr_enable_vad: bool,
+    funasr_enable_punc: bool,
+) -> str:
+    resolved_device = _resolve_funasr_device_ui(funasr_device)
+    preload_funasr_model(
+        model=(funasr_model or "").strip(),
+        device=resolved_device,
+        enable_vad=bool(funasr_enable_vad),
+        enable_punc=bool(funasr_enable_punc),
+    )
+    return f"已加载 FunASR 模型：{(funasr_model or '').strip()}（device={resolved_device}）"
+
+
+def download_funasr_model_ui(
+    funasr_model: str,
+    funasr_enable_vad: bool,
+    funasr_enable_punc: bool,
+) -> str:
+    download_funasr_model(
+        model=(funasr_model or "").strip(),
+        enable_vad=bool(funasr_enable_vad),
+        enable_punc=bool(funasr_enable_punc),
+    )
+    return "下载/初始化完成（已写入缓存目录）。若下次仍需下载，通常是网络/缓存目录权限问题。"
 
 
 def _auto_save_settings(
@@ -290,7 +347,11 @@ def run_asr(
         api_concurrency=api_concurrency,
     )
 
+    cancel_event = Event()
+    _set_current_cancel_event(cancel_event)
+
     try:
+        resolved_funasr_model = (funasr_model or "").strip() or DEFAULT_FUNASR_MODEL
         result = transcribe_to_subtitles(
             input_audio_path=audio_path,
             asr_backend=asr_backend,
@@ -300,7 +361,7 @@ def run_asr(
             model=model,
             language=lang,
             prompt=prompt,
-            funasr_model=(funasr_model or "").strip() or DEFAULT_FUNASR_MODEL,
+            funasr_model=resolved_funasr_model,
             funasr_device=(funasr_device or "").strip() or DEFAULT_FUNASR_DEVICE,
             funasr_language=(funasr_language or "").strip() or DEFAULT_FUNASR_LANGUAGE,
             funasr_use_itn=bool(funasr_use_itn),
@@ -319,9 +380,15 @@ def run_asr(
             upload_audio_format=(upload_audio_format or "").strip() or "wav",
             upload_mp3_bitrate_kbps=int(UPLOAD_MP3_BITRATE_KBPS),
             api_concurrency=int(api_concurrency),
+            cancel_event=cancel_event,
         )
     except Exception as e:
+        if cancel_event.is_set() or "已停止转写" in str(e):
+            logger.info("转写已停止: %s", e)
+            return "", "", None, "已停止转写"
         raise gr.Error(f"转写失败：{e}") from e
+    finally:
+        _set_current_cancel_event(None)
 
     return result.preview_text, result.full_text, result.subtitle_file_path, result.debug
 
@@ -392,7 +459,8 @@ with gr.Blocks(
                 placeholder="可填写术语/人名/地名等上下文，提升识别效果。",
             )
 
-            run_btn = gr.Button("开始转写")
+            run_btn = gr.Button("开始转写", variant="primary")
+            stop_btn = gr.Button("停止转写", variant="stop")
 
             with gr.Row():
                 preview = gr.Textbox(label="字幕预览（前约 5000 字符）", lines=12)
@@ -404,10 +472,8 @@ with gr.Blocks(
 
         with gr.Tab("引擎配置", id="tab_engine"):
             gr.Markdown(CUDA_NOTE)
-            with (
-                gr.Group(visible=DEFAULT_ASR_BACKEND == "openai") as openai_group,
-                gr.Accordion("OpenAI 配置", open=True),
-            ):
+            with gr.Group(visible=DEFAULT_ASR_BACKEND == "openai") as openai_group:
+                gr.Markdown("## OpenAI 配置")
                 openai_api_key = gr.Textbox(
                     label="OpenAI API Key（会明文保存在本机配置文件里）",
                     type="password",
@@ -424,10 +490,8 @@ with gr.Blocks(
                     value=DEFAULT_MODEL,
                 )
 
-            with (
-                gr.Group(visible=DEFAULT_ASR_BACKEND == "funasr") as funasr_group,
-                gr.Accordion("FunASR 本地推理", open=True),
-            ):
+            with gr.Group(visible=DEFAULT_ASR_BACKEND == "funasr") as funasr_group:
+                gr.Markdown("## FunASR 本地推理")
                 gr.Markdown("首次使用需安装：`uv sync --extra funasr`")
                 funasr_model = gr.Dropdown(
                     choices=[
@@ -438,9 +502,14 @@ with gr.Blocks(
                         ),
                     ],
                     value=DEFAULT_FUNASR_MODEL,
-                    label="本地模型",
+                    label="模型（HuggingFace RepoID）",
                     allow_custom_value=True,
                 )
+                with gr.Row():
+                    download_model_btn = gr.Button("下载模型", variant="secondary")
+                    load_model_btn = gr.Button("加载模型", variant="primary")
+                download_model_status = gr.Markdown()
+                load_model_status = gr.Markdown()
                 funasr_device = gr.Dropdown(
                     choices=[
                         ("自动", "auto"),
@@ -582,7 +651,19 @@ with gr.Blocks(
         outputs=[openai_group, funasr_group],
     )
 
-    run_btn.click(
+    download_model_btn.click(
+        fn=download_funasr_model_ui,
+        inputs=[funasr_model, funasr_enable_vad, funasr_enable_punc],
+        outputs=[download_model_status],
+    )
+
+    load_model_btn.click(
+        fn=load_funasr_model_ui,
+        inputs=[funasr_model, funasr_device, funasr_enable_vad, funasr_enable_punc],
+        outputs=[load_model_status],
+    )
+
+    run_event = run_btn.click(
         fn=run_asr,
         inputs=[
             audio_in,
@@ -613,6 +694,15 @@ with gr.Blocks(
             api_concurrency,
         ],
         outputs=[preview, full_text, out_file, debug],
+        concurrency_limit=1,
+    )
+
+    stop_btn.click(
+        fn=stop_transcribe,
+        inputs=[],
+        outputs=[debug],
+        cancels=[run_event],
+        queue=False,
     )
 
 

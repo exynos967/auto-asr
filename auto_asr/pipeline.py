@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from threading import local as thread_local
 from typing import Any
 
@@ -57,6 +58,11 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _check_cancel(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("已停止转写。")
+
+
 def transcribe_to_subtitles(
     *,
     input_audio_path: str,
@@ -88,6 +94,7 @@ def transcribe_to_subtitles(
     upload_mp3_bitrate_kbps: int = 192,
     api_concurrency: int = 4,
     outputs_dir: str = "outputs",
+    cancel_event: Event | None = None,
 ) -> PipelineResult:
     if output_format not in {"srt", "vtt", "txt"}:
         raise ValueError("output_format must be one of: srt, vtt, txt")
@@ -118,8 +125,10 @@ def transcribe_to_subtitles(
         int(vad_speech_pad_ms),
         api_concurrency,
     )
+    _check_cancel(cancel_event)
 
     if asr_backend == "funasr":
+        _check_cancel(cancel_event)
         wav_for_duration = load_audio(input_audio_path)
         duration_s = len(wav_for_duration) / float(WAV_SAMPLE_RATE)
 
@@ -128,6 +137,7 @@ def transcribe_to_subtitles(
         if language:
             # if user set language in UI, prefer it over funasr_language
             lang = language
+        _check_cancel(cancel_event)
         asr = transcribe_file_funasr(
             file_path=input_audio_path,
             model=funasr_model,
@@ -194,10 +204,12 @@ def transcribe_to_subtitles(
     #
     # This keeps subtitle axis accurate while significantly reducing local compute time.
     if output_format in {"srt", "vtt"} and timeline_strategy == "vad_speech" and enable_vad:
+        _check_cancel(cancel_event)
         vad_model = get_vad_model()
         if vad_model is None:
             logger.info("VAD 模型不可用，降级为分段整段模式。")
         else:
+            _check_cancel(cancel_event)
             wav = load_audio(input_audio_path)
             regions = process_vad_speech(
                 wav,
@@ -240,6 +252,7 @@ def transcribe_to_subtitles(
                     def _worker(
                         r_idx: int, r_start: int, r_end: int, r_wav: Any
                     ) -> tuple[int, float, float, Any]:
+                        _check_cancel(cancel_event)
                         abs_start_s = r_start / float(WAV_SAMPLE_RATE)
                         abs_end_s = r_end / float(WAV_SAMPLE_RATE)
 
@@ -249,6 +262,7 @@ def transcribe_to_subtitles(
                         # For speed: always upload speech regions as WAV (PCM_16).
                         upload_path = region_wav_path
 
+                        _check_cancel(cancel_event)
                         asr = transcribe_file_verbose(
                             _get_thread_client(),
                             file_path=upload_path,
@@ -259,9 +273,14 @@ def transcribe_to_subtitles(
                         return r_idx, abs_start_s, abs_end_s, asr
 
                     tasks = [(i, s, e, w) for i, (s, e, w) in enumerate(regions)]
-                    with ThreadPoolExecutor(max_workers=api_concurrency) as ex:
-                        futures = [ex.submit(_worker, *t) for t in tasks]
+                    ex = ThreadPoolExecutor(max_workers=api_concurrency)
+                    futures = [ex.submit(_worker, *t) for t in tasks]
+                    cancelled = False
+                    try:
                         for fut in as_completed(futures):
+                            if cancel_event is not None and cancel_event.is_set():
+                                cancelled = True
+                                break
                             try:
                                 r_idx, abs_start_s, abs_end_s, asr = fut.result()
                             except Exception as e:
@@ -276,6 +295,15 @@ def transcribe_to_subtitles(
                                 abs_start_s,
                                 abs_end_s,
                             )
+                    finally:
+                        if cancelled:
+                            for f in futures:
+                                f.cancel()
+                            ex.shutdown(wait=False, cancel_futures=True)
+                        else:
+                            ex.shutdown(wait=True, cancel_futures=True)
+
+                    _check_cancel(cancel_event)
 
                     for r_idx in range(len(regions)):
                         abs_start_s, abs_end_s, asr = results[r_idx]
@@ -345,6 +373,7 @@ def transcribe_to_subtitles(
 
             logger.info("VAD 未检测到语音段，降级为分段整段模式。")
 
+    _check_cancel(cancel_event)
     chunks, used_vad = load_and_split(
         file_path=input_audio_path,
         enable_vad=enable_vad,
@@ -366,6 +395,7 @@ def transcribe_to_subtitles(
     with TemporaryDirectory(prefix="auto-asr-") as tmp_dir:
         vad_model = get_vad_model() if enable_vad and timeline_strategy == "vad_speech" else None
         for idx, chunk in enumerate(chunks):
+            _check_cancel(cancel_event)
             logger.info(
                 "处理分段 %d/%d: start=%.2fs end=%.2fs duration=%.2fs",
                 idx + 1,
@@ -384,6 +414,7 @@ def transcribe_to_subtitles(
                 and timeline_strategy == "vad_speech"
                 and vad_model is not None
             ):
+                _check_cancel(cancel_event)
                 regions = process_vad_speech(
                     chunk.wav,
                     vad_model,
@@ -403,6 +434,7 @@ def transcribe_to_subtitles(
                         int(vad_speech_merge_gap_ms),
                     )
                     for r_idx, (r_start, r_end, r_wav) in enumerate(regions):
+                        _check_cancel(cancel_event)
                         abs_start_s = (chunk.start_sample + r_start) / float(WAV_SAMPLE_RATE)
                         abs_end_s = (chunk.start_sample + r_end) / float(WAV_SAMPLE_RATE)
                         region_wav_path = os.path.join(tmp_dir, f"region_{idx:04d}_{r_idx:04d}.wav")
@@ -432,6 +464,7 @@ def transcribe_to_subtitles(
                         except Exception:
                             pass
 
+                        _check_cancel(cancel_event)
                         asr = transcribe_file_verbose(
                             client,
                             file_path=upload_path,
@@ -482,6 +515,7 @@ def transcribe_to_subtitles(
                     continue
                 logger.info("VAD 未检测到语音段，降级为整段转写。")
 
+            _check_cancel(cancel_event)
             chunk_wav_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.wav")
             save_audio_file(chunk.wav, chunk_wav_path)
             upload_path = chunk_wav_path
@@ -507,6 +541,7 @@ def transcribe_to_subtitles(
             except Exception:
                 pass
 
+            _check_cancel(cancel_event)
             asr = transcribe_file_verbose(
                 client,
                 file_path=upload_path,
@@ -552,6 +587,7 @@ def transcribe_to_subtitles(
                     len(asr.text or ""),
                 )
 
+    _check_cancel(cancel_event)
     subtitle_lines.sort(key=lambda x: (x.start_s, x.end_s))
 
     full_text = "\n".join([t for t in full_text_parts if t]).strip()

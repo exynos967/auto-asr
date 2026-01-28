@@ -207,4 +207,64 @@ def transcribe_file_funasr(
     return ASRResult(text=text, segments=segments)
 
 
-__all__ = ["transcribe_file_funasr"]
+def preload_funasr_model(
+    *,
+    model: str,
+    device: str,
+    enable_vad: bool = True,
+    enable_punc: bool = True,
+) -> None:
+    """
+    Preload a FunASR model into process memory (and cache it) to reduce first-run latency.
+    """
+    cfg = FunASRConfig(
+        model=(model or "").strip(),
+        device=(device or "").strip(),
+        language="auto",
+        use_itn=True,
+        enable_vad=bool(enable_vad),
+        enable_punc=bool(enable_punc),
+    )
+    if not cfg.model:
+        raise RuntimeError("请先选择 FunASR 本地模型。")
+    _make_model(cfg)
+
+
+def download_funasr_model(
+    *,
+    model: str,
+    enable_vad: bool = True,
+    enable_punc: bool = True,
+) -> None:
+    """
+    Best-effort: trigger FunASR model download into cache without keeping it in `_MODEL_CACHE`.
+
+    FunASR/AutoModel internally decides where to cache model files (e.g. HuggingFace / ModelScope
+    cache).
+    """
+    model = (model or "").strip()
+    if not model:
+        raise RuntimeError("请先选择 FunASR 本地模型。")
+
+    AutoModel = _import_funasr()
+    model_kwargs: dict[str, Any] = {
+        "model": model,
+        "device": "cpu",
+        "trust_remote_code": True,
+    }
+    if enable_vad:
+        model_kwargs["vad_model"] = "fsmn-vad"
+        model_kwargs["vad_kwargs"] = {"max_single_segment_time": 60000}
+    if enable_punc:
+        model_kwargs["punc_model"] = "ct-punc"
+
+    _ = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+    logger.info(
+        "FunASR 模型已下载/初始化(未缓存到进程内): model=%s, vad=%s, punc=%s",
+        model,
+        bool(enable_vad),
+        bool(enable_punc),
+    )
+
+
+__all__ = ["download_funasr_model", "preload_funasr_model", "transcribe_file_funasr"]
