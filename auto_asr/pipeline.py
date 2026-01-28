@@ -11,6 +11,7 @@ from threading import local as thread_local
 from typing import Any
 
 from auto_asr.audio_tools import load_audio, process_vad_speech, transcode_wav_to_mp3
+from auto_asr.funasr_asr import transcribe_file_funasr
 from auto_asr.openai_asr import make_openai_client, transcribe_file_verbose
 from auto_asr.subtitles import SubtitleLine, compose_srt, compose_txt, compose_vtt
 from auto_asr.vad_split import (
@@ -21,6 +22,20 @@ from auto_asr.vad_split import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_funasr_device(device: str) -> str:
+    d = (device or "").strip().lower()
+    if d in {"", "auto"}:
+        try:
+            import torch  # type: ignore
+
+            if torch.cuda.is_available():
+                return "cuda:0"
+        except Exception:
+            pass
+        return "cpu"
+    return device
 
 
 @dataclass(frozen=True)
@@ -45,12 +60,20 @@ def _write_text(path: Path, text: str) -> None:
 def transcribe_to_subtitles(
     *,
     input_audio_path: str,
-    openai_api_key: str,
+    asr_backend: str = "openai",
+    openai_api_key: str = "",
     openai_base_url: str | None = None,
     output_format: str,
     model: str = "whisper-1",
     language: str | None = None,
     prompt: str | None = None,
+    # FunASR local inference
+    funasr_model: str = "iic/SenseVoiceSmall",
+    funasr_device: str = "auto",
+    funasr_language: str = "auto",
+    funasr_use_itn: bool = True,
+    funasr_enable_vad: bool = True,
+    funasr_enable_punc: bool = True,
     enable_vad: bool = True,
     vad_segment_threshold_s: int = 120,
     vad_max_segment_threshold_s: int = 180,
@@ -68,6 +91,8 @@ def transcribe_to_subtitles(
 ) -> PipelineResult:
     if output_format not in {"srt", "vtt", "txt"}:
         raise ValueError("output_format must be one of: srt, vtt, txt")
+    if asr_backend not in {"openai", "funasr"}:
+        raise ValueError("asr_backend must be one of: openai, funasr")
     if timeline_strategy not in {"chunk", "vad_speech"}:
         raise ValueError("timeline_strategy must be one of: chunk, vad_speech")
     if upload_audio_format not in {"wav", "mp3"}:
@@ -75,10 +100,11 @@ def transcribe_to_subtitles(
     api_concurrency = max(1, int(api_concurrency))
 
     logger.info(
-        "开始转写: file=%s, format=%s, model=%s, language=%s, vad=%s, "
+        "开始转写: backend=%s, file=%s, format=%s, model=%s, language=%s, vad=%s, "
         "timeline_strategy=%s, upload_audio_format=%s, vad_threshold=%.2f, "
         "vad_min_speech_duration_ms=%d, vad_min_silence_duration_ms=%d, vad_speech_pad_ms=%d, "
         "api_concurrency=%d",
+        asr_backend,
         input_audio_path,
         output_format,
         model,
@@ -92,6 +118,73 @@ def transcribe_to_subtitles(
         int(vad_speech_pad_ms),
         api_concurrency,
     )
+
+    if asr_backend == "funasr":
+        wav_for_duration = load_audio(input_audio_path)
+        duration_s = len(wav_for_duration) / float(WAV_SAMPLE_RATE)
+
+        resolved_device = _resolve_funasr_device(funasr_device)
+        lang = (funasr_language or "").strip() or "auto"
+        if language:
+            # if user set language in UI, prefer it over funasr_language
+            lang = language
+        asr = transcribe_file_funasr(
+            file_path=input_audio_path,
+            model=funasr_model,
+            device=resolved_device,
+            language=lang,
+            use_itn=bool(funasr_use_itn),
+            enable_vad=bool(funasr_enable_vad),
+            enable_punc=bool(funasr_enable_punc),
+            duration_s=duration_s,
+        )
+
+        subtitle_lines: list[SubtitleLine] = []
+        if output_format in {"srt", "vtt"}:
+            if asr.segments:
+                for seg in asr.segments:
+                    subtitle_lines.append(
+                        SubtitleLine(start_s=seg.start_s, end_s=seg.end_s, text=seg.text)
+                    )
+            else:
+                subtitle_lines.append(
+                    SubtitleLine(start_s=0.0, end_s=max(duration_s, 0.01), text=asr.text)
+                )
+
+        subtitle_lines.sort(key=lambda x: (x.start_s, x.end_s))
+        full_text = (asr.text or "").strip()
+
+        if output_format == "srt":
+            subtitle_text = compose_srt(subtitle_lines)
+            ext = "srt"
+        elif output_format == "vtt":
+            subtitle_text = compose_vtt(subtitle_lines)
+            ext = "vtt"
+        else:
+            subtitle_text = compose_txt(full_text)
+            ext = "txt"
+
+        out_base = f"{_safe_stem(input_audio_path)}-{time.strftime('%Y%m%d-%H%M%S')}"
+        out_path = Path(outputs_dir) / f"{out_base}.{ext}"
+        _write_text(out_path, subtitle_text)
+
+        preview = subtitle_text[:5000]
+        debug = (
+            f"backend=funasr, model={funasr_model}, device={resolved_device}, "
+            f"segments={len(asr.segments)}, duration_s={duration_s:.2f}"
+        )
+        logger.info(
+            "转写完成(funasr): out=%s, segments=%d, duration=%.2fs",
+            out_path,
+            len(asr.segments),
+            duration_s,
+        )
+        return PipelineResult(
+            preview_text=preview,
+            full_text=full_text,
+            subtitle_file_path=str(out_path),
+            debug=debug,
+        )
 
     client = make_openai_client(api_key=openai_api_key, base_url=openai_base_url)
 
@@ -179,7 +272,7 @@ def transcribe_to_subtitles(
                                 "语音段 %d/%d 完成: text_len=%d, start=%.2fs end=%.2fs",
                                 r_idx + 1,
                                 len(regions),
-                                len(getattr(asr, 'text', '') or ''),
+                                len(getattr(asr, "text", "") or ""),
                                 abs_start_s,
                                 abs_end_s,
                             )
@@ -312,15 +405,11 @@ def transcribe_to_subtitles(
                     for r_idx, (r_start, r_end, r_wav) in enumerate(regions):
                         abs_start_s = (chunk.start_sample + r_start) / float(WAV_SAMPLE_RATE)
                         abs_end_s = (chunk.start_sample + r_end) / float(WAV_SAMPLE_RATE)
-                        region_wav_path = os.path.join(
-                            tmp_dir, f"region_{idx:04d}_{r_idx:04d}.wav"
-                        )
+                        region_wav_path = os.path.join(tmp_dir, f"region_{idx:04d}_{r_idx:04d}.wav")
                         save_audio_file(r_wav, region_wav_path)
                         upload_path = region_wav_path
                         if upload_audio_format == "mp3":
-                            upload_path = os.path.join(
-                                tmp_dir, f"region_{idx:04d}_{r_idx:04d}.mp3"
-                            )
+                            upload_path = os.path.join(tmp_dir, f"region_{idx:04d}_{r_idx:04d}.mp3")
                             try:
                                 transcode_wav_to_mp3(
                                     input_wav_path=region_wav_path,

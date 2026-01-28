@@ -35,6 +35,18 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
 DEFAULT_OPENAI_API_KEY = _str(_SAVED_CONFIG.get("openai_api_key")).strip()
 DEFAULT_OPENAI_BASE_URL = _str(_SAVED_CONFIG.get("openai_base_url")).strip()
 DEFAULT_MODEL = _str(_SAVED_CONFIG.get("model", "whisper-1")).strip() or "whisper-1"
+DEFAULT_ASR_BACKEND = _str(_SAVED_CONFIG.get("asr_backend", "openai")).strip() or "openai"
+if DEFAULT_ASR_BACKEND not in {"openai", "funasr"}:
+    DEFAULT_ASR_BACKEND = "openai"
+
+DEFAULT_FUNASR_MODEL = _str(_SAVED_CONFIG.get("funasr_model", "iic/SenseVoiceSmall")).strip()
+DEFAULT_FUNASR_DEVICE = _str(_SAVED_CONFIG.get("funasr_device", "auto")).strip() or "auto"
+if DEFAULT_FUNASR_DEVICE not in {"auto", "cpu", "cuda:0"}:
+    DEFAULT_FUNASR_DEVICE = "auto"
+DEFAULT_FUNASR_LANGUAGE = _str(_SAVED_CONFIG.get("funasr_language", "auto")).strip() or "auto"
+DEFAULT_FUNASR_USE_ITN = bool(_SAVED_CONFIG.get("funasr_use_itn", True))
+DEFAULT_FUNASR_ENABLE_VAD = bool(_SAVED_CONFIG.get("funasr_enable_vad", True))
+DEFAULT_FUNASR_ENABLE_PUNC = bool(_SAVED_CONFIG.get("funasr_enable_punc", True))
 DEFAULT_OUTPUT_FORMAT = _str(_SAVED_CONFIG.get("output_format", "srt")).strip() or "srt"
 if DEFAULT_OUTPUT_FORMAT not in {"srt", "vtt", "txt"}:
     DEFAULT_OUTPUT_FORMAT = "srt"
@@ -80,9 +92,8 @@ DEFAULT_VAD_SPEECH_MERGE_GAP_MS = _clamp_int(
 )
 DEFAULT_API_CONCURRENCY = _clamp_int(_int(_SAVED_CONFIG.get("api_concurrency"), 4), 1, 16)
 DEFAULT_REMEMBER_API_KEY = bool(DEFAULT_OPENAI_API_KEY)
-INITIAL_CONFIG_STATUS = (
-    f"配置文件：`{_CONFIG_PATH}`"
-    + ("（已加载）" if _CONFIG_PATH.exists() else "（尚未保存）")
+INITIAL_CONFIG_STATUS = f"配置文件：`{_CONFIG_PATH}`" + (
+    "（已加载）" if _CONFIG_PATH.exists() else "（尚未保存）"
 )
 
 logger.info(
@@ -92,11 +103,19 @@ logger.info(
     bool(DEFAULT_OPENAI_API_KEY),
 )
 
+
 def run_asr(
     audio_path: str | None,
+    asr_backend: str,
     openai_api_key: str,
     openai_base_url: str,
     model: str,
+    funasr_model: str,
+    funasr_device: str,
+    funasr_language: str,
+    funasr_use_itn: bool,
+    funasr_enable_vad: bool,
+    funasr_enable_punc: bool,
     output_format: str,
     language: str,
     prompt: str,
@@ -115,7 +134,8 @@ def run_asr(
 ):
     if not audio_path:
         raise gr.Error("请先上传或录制一段音频。")
-    if not (openai_api_key or "").strip():
+    asr_backend = (asr_backend or "").strip() or "openai"
+    if asr_backend == "openai" and not (openai_api_key or "").strip():
         raise gr.Error("请先填写 OpenAI API Key。")
 
     lang = None if language == "auto" else language
@@ -124,10 +144,11 @@ def run_asr(
     base_url = (openai_base_url or "").strip() or None
 
     logger.info(
-        "收到转写请求: file=%s, format=%s, language=%s, model=%s, base_url=%s, "
+        "收到转写请求: backend=%s, file=%s, format=%s, language=%s, model=%s, base_url=%s, "
         "enable_vad=%s, target=%ss, max=%ss, timeline_strategy=%s, upload=%s, "
         "vad_threshold=%.2f, vad_min_speech_ms=%d, vad_min_silence_ms=%d, vad_pad_ms=%d, "
         "api_concurrency=%d",
+        asr_backend,
         audio_path,
         output_format,
         lang or "auto",
@@ -148,12 +169,19 @@ def run_asr(
     try:
         result = transcribe_to_subtitles(
             input_audio_path=audio_path,
+            asr_backend=asr_backend,
             openai_api_key=openai_api_key,
             openai_base_url=base_url,
             output_format=output_format,
             model=model,
             language=lang,
             prompt=prompt,
+            funasr_model=(funasr_model or "").strip() or DEFAULT_FUNASR_MODEL,
+            funasr_device=(funasr_device or "").strip() or DEFAULT_FUNASR_DEVICE,
+            funasr_language=(funasr_language or "").strip() or DEFAULT_FUNASR_LANGUAGE,
+            funasr_use_itn=bool(funasr_use_itn),
+            funasr_enable_vad=bool(funasr_enable_vad),
+            funasr_enable_punc=bool(funasr_enable_punc),
             enable_vad=enable_vad,
             vad_segment_threshold_s=int(vad_segment_threshold_s),
             vad_max_segment_threshold_s=int(vad_max_segment_threshold_s),
@@ -175,9 +203,16 @@ def run_asr(
 
 
 def save_settings(
+    asr_backend: str,
     openai_api_key: str,
     openai_base_url: str,
     model: str,
+    funasr_model: str,
+    funasr_device: str,
+    funasr_language: str,
+    funasr_use_itn: bool,
+    funasr_enable_vad: bool,
+    funasr_enable_punc: bool,
     output_format: str,
     language: str,
     enable_vad: bool,
@@ -195,7 +230,14 @@ def save_settings(
     remember_api_key: bool,
 ) -> str:
     config = {
+        "asr_backend": (asr_backend or "").strip() or "openai",
         "enable_vad": bool(enable_vad),
+        "funasr_device": (funasr_device or "").strip() or "auto",
+        "funasr_enable_punc": bool(funasr_enable_punc),
+        "funasr_enable_vad": bool(funasr_enable_vad),
+        "funasr_language": (funasr_language or "").strip() or "auto",
+        "funasr_model": (funasr_model or "").strip() or "iic/SenseVoiceSmall",
+        "funasr_use_itn": bool(funasr_use_itn),
         "language": (language or "").strip() or "auto",
         "model": (model or "").strip() or "whisper-1",
         "openai_base_url": (openai_base_url or "").strip(),
@@ -228,9 +270,16 @@ def clear_settings():
     logger.info("配置已清除: deleted=%s", deleted)
     msg = "已清除已保存配置。" if deleted else "未找到已保存配置。"
     return (
+        "openai",
         "",
         "",
         "whisper-1",
+        "iic/SenseVoiceSmall",
+        "auto",
+        "auto",
+        True,
+        True,
+        True,
         "srt",
         "auto",
         True,
@@ -258,7 +307,7 @@ with gr.Blocks(
         "\n".join(
             [
                 "# Auto-ASR",
-                "上传/录制音频 -> OpenAI ASR -> 导出 SRT / VTT / TXT。",
+                "上传/录制音频 -> ASR -> 导出 SRT / VTT / TXT。",
                 "",
                 "- 若上游不返回 segments（无时间戳），可用 VAD 语音段模式生成更准的字幕轴。",
                 "- 语音段模式会增加调用次数（按语音段逐段转写）。",
@@ -269,7 +318,19 @@ with gr.Blocks(
         )
     )
 
-    with gr.Accordion("OpenAI 配置", open=True):
+    asr_backend = gr.Dropdown(
+        choices=[
+            ("OpenAI API（远程）", "openai"),
+            ("FunASR（本地推理）", "funasr"),
+        ],
+        value=DEFAULT_ASR_BACKEND,
+        label="ASR 引擎",
+    )
+
+    with (
+        gr.Group(visible=DEFAULT_ASR_BACKEND == "openai") as openai_group,
+        gr.Accordion("OpenAI 配置", open=True),
+    ):
         openai_api_key = gr.Textbox(
             label="OpenAI API Key",
             type="password",
@@ -285,6 +346,69 @@ with gr.Blocks(
             label="模型（默认 whisper-1）",
             value=DEFAULT_MODEL,
         )
+
+    with (
+        gr.Group(visible=DEFAULT_ASR_BACKEND == "funasr") as funasr_group,
+        gr.Accordion("FunASR 本地推理", open=True),
+    ):
+        gr.Markdown("首次使用需安装：`uv sync --extra funasr`")
+        funasr_model = gr.Dropdown(
+            choices=[
+                ("SenseVoiceSmall（iic/SenseVoiceSmall）", "iic/SenseVoiceSmall"),
+                (
+                    "Fun-ASR-Nano-2512（FunAudioLLM/Fun-ASR-Nano-2512）",
+                    "FunAudioLLM/Fun-ASR-Nano-2512",
+                ),
+            ],
+            value=DEFAULT_FUNASR_MODEL,
+            label="本地模型",
+            allow_custom_value=True,
+        )
+        funasr_device = gr.Dropdown(
+            choices=[
+                ("自动", "auto"),
+                ("CPU", "cpu"),
+                ("CUDA:0", "cuda:0"),
+            ],
+            value=DEFAULT_FUNASR_DEVICE,
+            label="设备",
+        )
+        funasr_language = gr.Dropdown(
+            choices=[
+                ("自动", "auto"),
+                ("中文", "zh"),
+                ("粤语", "yue"),
+                ("英语", "en"),
+                ("日语", "ja"),
+                ("韩语", "ko"),
+                ("不说话/无语音", "nospeech"),
+            ],
+            value=DEFAULT_FUNASR_LANGUAGE,
+            label="语言（FunASR）",
+        )
+        funasr_use_itn = gr.Checkbox(
+            value=DEFAULT_FUNASR_USE_ITN,
+            label="启用 ITN（数字/符号归一化）",
+        )
+        with gr.Row():
+            funasr_enable_vad = gr.Checkbox(
+                value=DEFAULT_FUNASR_ENABLE_VAD,
+                label="启用内置 VAD（推荐）",
+            )
+            funasr_enable_punc = gr.Checkbox(
+                value=DEFAULT_FUNASR_ENABLE_PUNC,
+                label="启用标点恢复（推荐）",
+            )
+
+    def _toggle_asr_backend(backend: str):
+        backend = (backend or "").strip()
+        return gr.update(visible=backend == "openai"), gr.update(visible=backend == "funasr")
+
+    asr_backend.change(
+        fn=_toggle_asr_backend,
+        inputs=[asr_backend],
+        outputs=[openai_group, funasr_group],
+    )
 
     with gr.Accordion("配置保存", open=False):
         remember_api_key = gr.Checkbox(
@@ -440,9 +564,16 @@ with gr.Blocks(
         fn=run_asr,
         inputs=[
             audio_in,
+            asr_backend,
             openai_api_key,
             openai_base_url,
             model,
+            funasr_model,
+            funasr_device,
+            funasr_language,
+            funasr_use_itn,
+            funasr_enable_vad,
+            funasr_enable_punc,
             output_format,
             language,
             prompt,
@@ -465,9 +596,16 @@ with gr.Blocks(
     save_btn.click(
         fn=save_settings,
         inputs=[
+            asr_backend,
             openai_api_key,
             openai_base_url,
             model,
+            funasr_model,
+            funasr_device,
+            funasr_language,
+            funasr_use_itn,
+            funasr_enable_vad,
+            funasr_enable_punc,
             output_format,
             language,
             enable_vad,
@@ -491,9 +629,16 @@ with gr.Blocks(
         fn=clear_settings,
         inputs=[],
         outputs=[
+            asr_backend,
             openai_api_key,
             openai_base_url,
             model,
+            funasr_model,
+            funasr_device,
+            funasr_language,
+            funasr_use_itn,
+            funasr_enable_vad,
+            funasr_enable_punc,
             output_format,
             language,
             enable_vad,

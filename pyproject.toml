@@ -13,6 +13,9 @@ dependencies = [
     "silero_vad",
 ]
 
+[project.optional-dependencies]
+funasr = ["funasr", "modelscope"]
+
 [dependency-groups]
 dev = ["ruff", "pytest"]
 
