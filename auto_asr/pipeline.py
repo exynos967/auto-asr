@@ -3,9 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import local as thread_local
+from typing import Any
 
 from auto_asr.audio_tools import load_audio, process_vad_speech, transcode_wav_to_mp3
 from auto_asr.openai_asr import make_openai_client, transcribe_file_verbose
@@ -58,8 +61,9 @@ def transcribe_to_subtitles(
     timeline_strategy: str = "vad_speech",
     vad_speech_max_utterance_s: int = 20,
     vad_speech_merge_gap_ms: int = 300,
-    upload_audio_format: str = "mp3",
-    upload_mp3_bitrate_kbps: int = 64,
+    upload_audio_format: str = "wav",
+    upload_mp3_bitrate_kbps: int = 192,
+    api_concurrency: int = 4,
     outputs_dir: str = "outputs",
 ) -> PipelineResult:
     if output_format not in {"srt", "vtt", "txt"}:
@@ -68,11 +72,13 @@ def transcribe_to_subtitles(
         raise ValueError("timeline_strategy must be one of: chunk, vad_speech")
     if upload_audio_format not in {"wav", "mp3"}:
         raise ValueError("upload_audio_format must be one of: wav, mp3")
+    api_concurrency = max(1, int(api_concurrency))
 
     logger.info(
         "开始转写: file=%s, format=%s, model=%s, language=%s, vad=%s, "
         "timeline_strategy=%s, upload_audio_format=%s, vad_threshold=%.2f, "
-        "vad_min_speech_duration_ms=%d, vad_min_silence_duration_ms=%d, vad_speech_pad_ms=%d",
+        "vad_min_speech_duration_ms=%d, vad_min_silence_duration_ms=%d, vad_speech_pad_ms=%d, "
+        "api_concurrency=%d",
         input_audio_path,
         output_format,
         model,
@@ -84,6 +90,7 @@ def transcribe_to_subtitles(
         int(vad_min_speech_duration_ms),
         int(vad_min_silence_duration_ms),
         int(vad_speech_pad_ms),
+        api_concurrency,
     )
 
     client = make_openai_client(api_key=openai_api_key, base_url=openai_base_url)
@@ -117,14 +124,29 @@ def transcribe_to_subtitles(
                 used_vad = True
 
                 logger.info(
-                    "VAD 语音段模式(单次VAD): regions=%d, max_utterance=%ss, merge_gap=%dms",
+                    "VAD 语音段模式(单次VAD): regions=%d, concurrency=%d, "
+                    "max_utterance=%ss, merge_gap=%dms",
                     len(regions),
+                    api_concurrency,
                     int(vad_speech_max_utterance_s),
                     int(vad_speech_merge_gap_ms),
                 )
 
+                _tl = thread_local()
+
+                def _get_thread_client():
+                    c = getattr(_tl, "client", None)
+                    if c is None:
+                        c = make_openai_client(api_key=openai_api_key, base_url=openai_base_url)
+                        _tl.client = c
+                    return c
+
                 with TemporaryDirectory(prefix="auto-asr-") as tmp_dir:
-                    for r_idx, (r_start, r_end, r_wav) in enumerate(regions):
+                    results: dict[int, tuple[float, float, Any]] = {}
+
+                    def _worker(
+                        r_idx: int, r_start: int, r_end: int, r_wav: Any
+                    ) -> tuple[int, float, float, Any]:
                         abs_start_s = r_start / float(WAV_SAMPLE_RATE)
                         abs_end_s = r_end / float(WAV_SAMPLE_RATE)
 
@@ -134,25 +156,37 @@ def transcribe_to_subtitles(
                         # For speed: always upload speech regions as WAV (PCM_16).
                         upload_path = region_wav_path
 
-                        try:
-                            size_bytes = os.path.getsize(upload_path)
-                            logger.info(
-                                "语音段 %d/%d 文件大小: %.2f MiB (%d bytes)",
-                                r_idx + 1,
-                                len(regions),
-                                size_bytes / 1024.0 / 1024.0,
-                                size_bytes,
-                            )
-                        except Exception:
-                            pass
-
                         asr = transcribe_file_verbose(
-                            client,
+                            _get_thread_client(),
                             file_path=upload_path,
                             model=model,
                             language=language,
                             prompt=prompt,
                         )
+                        return r_idx, abs_start_s, abs_end_s, asr
+
+                    tasks = [(i, s, e, w) for i, (s, e, w) in enumerate(regions)]
+                    with ThreadPoolExecutor(max_workers=api_concurrency) as ex:
+                        futures = [ex.submit(_worker, *t) for t in tasks]
+                        for fut in as_completed(futures):
+                            try:
+                                r_idx, abs_start_s, abs_end_s, asr = fut.result()
+                            except Exception as e:
+                                raise RuntimeError(f"语音段并发转写失败：{e}") from e
+
+                            results[int(r_idx)] = (abs_start_s, abs_end_s, asr)
+                            logger.info(
+                                "语音段 %d/%d 完成: text_len=%d, start=%.2fs end=%.2fs",
+                                r_idx + 1,
+                                len(regions),
+                                len(getattr(asr, 'text', '') or ''),
+                                abs_start_s,
+                                abs_end_s,
+                            )
+
+                    for r_idx in range(len(regions)):
+                        abs_start_s, abs_end_s, asr = results[r_idx]
+                        # Preserve chronological text order (matches region order).
                         full_text_parts.append(asr.text.strip())
 
                         if asr.segments:
@@ -165,16 +199,6 @@ def transcribe_to_subtitles(
                                     )
                                 )
                             total_segments += len(asr.segments)
-                            logger.info(
-                                "语音段 %d/%d 完成: segments=%d, text_len=%d, "
-                                "start=%.2fs end=%.2fs",
-                                r_idx + 1,
-                                len(regions),
-                                len(asr.segments),
-                                len(asr.text or ""),
-                                abs_start_s,
-                                abs_end_s,
-                            )
                         else:
                             subtitle_lines.append(
                                 SubtitleLine(
@@ -184,15 +208,6 @@ def transcribe_to_subtitles(
                                 )
                             )
                             total_segments += 1
-                            logger.info(
-                                "语音段 %d/%d 完成: segments=0(用VAD时间轴), text_len=%d, "
-                                "start=%.2fs end=%.2fs",
-                                r_idx + 1,
-                                len(regions),
-                                len(asr.text or ""),
-                                abs_start_s,
-                                abs_end_s,
-                            )
 
                 subtitle_lines.sort(key=lambda x: (x.start_s, x.end_s))
 
@@ -219,7 +234,8 @@ def transcribe_to_subtitles(
                     f"vad_speech_pad_ms={int(vad_speech_pad_ms)}, "
                     f"vad_speech_max_utterance_s={int(vad_speech_max_utterance_s)}, "
                     f"vad_speech_merge_gap_ms={int(vad_speech_merge_gap_ms)}, "
-                    f"timeline_strategy={timeline_strategy}, upload_audio_format=wav"
+                    f"timeline_strategy={timeline_strategy}, upload_audio_format=wav, "
+                    f"api_concurrency={api_concurrency}"
                 )
                 logger.info(
                     "转写完成(vad_speech): out=%s, regions=%d, segments=%d",

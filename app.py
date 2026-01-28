@@ -66,13 +66,11 @@ DEFAULT_TIMELINE_STRATEGY = _str(_SAVED_CONFIG.get("timeline_strategy", "vad_spe
 if DEFAULT_TIMELINE_STRATEGY not in {"chunk", "vad_speech"}:
     DEFAULT_TIMELINE_STRATEGY = "vad_speech"
 
-DEFAULT_UPLOAD_AUDIO_FORMAT = _str(_SAVED_CONFIG.get("upload_audio_format", "mp3")).strip()
+DEFAULT_UPLOAD_AUDIO_FORMAT = _str(_SAVED_CONFIG.get("upload_audio_format", "wav")).strip()
 if DEFAULT_UPLOAD_AUDIO_FORMAT not in {"wav", "mp3"}:
-    DEFAULT_UPLOAD_AUDIO_FORMAT = "mp3"
+    DEFAULT_UPLOAD_AUDIO_FORMAT = "wav"
 
-DEFAULT_UPLOAD_MP3_BITRATE_KBPS = _clamp_int(
-    _int(_SAVED_CONFIG.get("upload_mp3_bitrate_kbps"), 64), 16, 192
-)
+UPLOAD_MP3_BITRATE_KBPS = 192
 
 DEFAULT_VAD_SPEECH_MAX_UTTERANCE_S = _clamp_int(
     _int(_SAVED_CONFIG.get("vad_speech_max_utterance_s"), 20), 5, 60
@@ -80,6 +78,7 @@ DEFAULT_VAD_SPEECH_MAX_UTTERANCE_S = _clamp_int(
 DEFAULT_VAD_SPEECH_MERGE_GAP_MS = _clamp_int(
     _int(_SAVED_CONFIG.get("vad_speech_merge_gap_ms"), 300), 0, 2000
 )
+DEFAULT_API_CONCURRENCY = _clamp_int(_int(_SAVED_CONFIG.get("api_concurrency"), 4), 1, 16)
 DEFAULT_REMEMBER_API_KEY = bool(DEFAULT_OPENAI_API_KEY)
 INITIAL_CONFIG_STATUS = (
     f"配置文件：`{_CONFIG_PATH}`"
@@ -112,7 +111,7 @@ def run_asr(
     vad_speech_max_utterance_s: int,
     vad_speech_merge_gap_ms: int,
     upload_audio_format: str,
-    upload_mp3_bitrate_kbps: int,
+    api_concurrency: int,
 ):
     if not audio_path:
         raise gr.Error("请先上传或录制一段音频。")
@@ -127,7 +126,8 @@ def run_asr(
     logger.info(
         "收到转写请求: file=%s, format=%s, language=%s, model=%s, base_url=%s, "
         "enable_vad=%s, target=%ss, max=%ss, timeline_strategy=%s, upload=%s, "
-        "vad_threshold=%.2f, vad_min_speech_ms=%d, vad_min_silence_ms=%d, vad_pad_ms=%d",
+        "vad_threshold=%.2f, vad_min_speech_ms=%d, vad_min_silence_ms=%d, vad_pad_ms=%d, "
+        "api_concurrency=%d",
         audio_path,
         output_format,
         lang or "auto",
@@ -137,11 +137,12 @@ def run_asr(
         vad_segment_threshold_s,
         vad_max_segment_threshold_s,
         timeline_strategy,
-        f"{upload_audio_format}/{int(upload_mp3_bitrate_kbps)}k",
+        f"{upload_audio_format}/{UPLOAD_MP3_BITRATE_KBPS}k",
         float(vad_threshold),
         int(vad_min_speech_duration_ms),
         int(vad_min_silence_duration_ms),
         int(vad_speech_pad_ms),
+        int(api_concurrency),
     )
 
     try:
@@ -163,8 +164,9 @@ def run_asr(
             timeline_strategy=(timeline_strategy or "").strip() or "vad_speech",
             vad_speech_max_utterance_s=int(vad_speech_max_utterance_s),
             vad_speech_merge_gap_ms=int(vad_speech_merge_gap_ms),
-            upload_audio_format=(upload_audio_format or "").strip() or "mp3",
-            upload_mp3_bitrate_kbps=int(upload_mp3_bitrate_kbps),
+            upload_audio_format=(upload_audio_format or "").strip() or "wav",
+            upload_mp3_bitrate_kbps=int(UPLOAD_MP3_BITRATE_KBPS),
+            api_concurrency=int(api_concurrency),
         )
     except Exception as e:
         raise gr.Error(f"转写失败：{e}") from e
@@ -189,7 +191,7 @@ def save_settings(
     vad_speech_max_utterance_s: int,
     vad_speech_merge_gap_ms: int,
     upload_audio_format: str,
-    upload_mp3_bitrate_kbps: int,
+    api_concurrency: int,
     remember_api_key: bool,
 ) -> str:
     config = {
@@ -199,8 +201,8 @@ def save_settings(
         "openai_base_url": (openai_base_url or "").strip(),
         "output_format": (output_format or "").strip() or "srt",
         "timeline_strategy": (timeline_strategy or "").strip() or "vad_speech",
-        "upload_audio_format": (upload_audio_format or "").strip() or "mp3",
-        "upload_mp3_bitrate_kbps": int(upload_mp3_bitrate_kbps),
+        "upload_audio_format": (upload_audio_format or "").strip() or "wav",
+        "upload_mp3_bitrate_kbps": int(UPLOAD_MP3_BITRATE_KBPS),
         "vad_threshold": float(vad_threshold),
         "vad_min_speech_duration_ms": int(vad_min_speech_duration_ms),
         "vad_min_silence_duration_ms": int(vad_min_silence_duration_ms),
@@ -209,6 +211,7 @@ def save_settings(
         "vad_speech_merge_gap_ms": int(vad_speech_merge_gap_ms),
         "vad_max_segment_threshold_s": int(vad_max_segment_threshold_s),
         "vad_segment_threshold_s": int(vad_segment_threshold_s),
+        "api_concurrency": int(api_concurrency),
     }
     if remember_api_key:
         config["openai_api_key"] = (openai_api_key or "").strip()
@@ -240,8 +243,8 @@ def clear_settings():
         "vad_speech",
         20,
         300,
-        "mp3",
-        64,
+        "wav",
+        4,
         False,
         msg,
     )
@@ -260,7 +263,7 @@ with gr.Blocks(
                 "- 若上游不返回 segments（无时间戳），可用 VAD 语音段模式生成更准的字幕轴。",
                 "- 语音段模式会增加调用次数（按语音段逐段转写）。",
                 "- 为了加速，语音段模式默认使用 WAV(PCM16) 上传；分段整段模式可选 MP3 压缩。",
-                "- 部分上游对音频文件大小有限制，建议上传格式选 MP3 压缩。",
+                "- 默认 WAV 无压缩；若上游对文件大小有限制严格，可改用 MP3 压缩。",
                 "- 本项目默认依赖 Silero VAD（首次安装体积较大，会拉取 PyTorch/ONNXRuntime）。",
             ]
         )
@@ -407,18 +410,20 @@ with gr.Blocks(
     with gr.Accordion("上传优化（避免上游文件过大）", open=False):
         upload_audio_format = gr.Dropdown(
             choices=[
-                ("MP3 压缩（推荐）", "mp3"),
                 ("WAV 无压缩（可能触发上游大小限制）", "wav"),
+                ("MP3 压缩（固定 192kbps）", "mp3"),
             ],
             value=DEFAULT_UPLOAD_AUDIO_FORMAT,
             label="上传音频格式",
         )
-        upload_mp3_bitrate_kbps = gr.Slider(
-            minimum=16,
-            maximum=192,
-            value=DEFAULT_UPLOAD_MP3_BITRATE_KBPS,
-            step=16,
-            label="MP3 码率（kbps）",
+
+    with gr.Accordion("性能", open=False):
+        api_concurrency = gr.Slider(
+            minimum=1,
+            maximum=16,
+            value=DEFAULT_API_CONCURRENCY,
+            step=1,
+            label="并发请求数（仅 VAD 语音段模式生效）",
         )
 
     run_btn = gr.Button("开始转写")
@@ -452,7 +457,7 @@ with gr.Blocks(
             vad_speech_max_utterance_s,
             vad_speech_merge_gap_ms,
             upload_audio_format,
-            upload_mp3_bitrate_kbps,
+            api_concurrency,
         ],
         outputs=[preview, full_text, out_file, debug],
     )
@@ -476,7 +481,7 @@ with gr.Blocks(
             vad_speech_max_utterance_s,
             vad_speech_merge_gap_ms,
             upload_audio_format,
-            upload_mp3_bitrate_kbps,
+            api_concurrency,
             remember_api_key,
         ],
         outputs=[config_status],
@@ -502,7 +507,7 @@ with gr.Blocks(
             vad_speech_max_utterance_s,
             vad_speech_merge_gap_ms,
             upload_audio_format,
-            upload_mp3_bitrate_kbps,
+            api_concurrency,
             remember_api_key,
             config_status,
         ],
