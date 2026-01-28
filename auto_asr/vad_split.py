@@ -57,6 +57,10 @@ def load_and_split(
     enable_vad: bool,
     vad_segment_threshold_s: int,
     vad_max_segment_threshold_s: int,
+    vad_threshold: float = 0.5,
+    vad_min_speech_duration_ms: int = 200,
+    vad_min_silence_duration_ms: int = 200,
+    vad_speech_pad_ms: int = 200,
     vad_min_duration_s: int = 180,
 ) -> tuple[list[AudioChunk], bool]:
     wav = load_audio(file_path)
@@ -80,6 +84,10 @@ def load_and_split(
         vad_model,
         segment_threshold_s=vad_segment_threshold_s,
         max_segment_threshold_s=vad_max_segment_threshold_s,
+        vad_threshold=vad_threshold,
+        vad_min_speech_duration_ms=vad_min_speech_duration_ms,
+        vad_min_silence_duration_ms=vad_min_silence_duration_ms,
+        vad_speech_pad_ms=vad_speech_pad_ms,
     )
     logger.info("切分完成: chunks=%d, used_vad=%s", len(parts), used_vad)
     return [AudioChunk(start_sample=s, end_sample=e, wav=w) for (s, e, w) in parts], used_vad

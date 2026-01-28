@@ -7,6 +7,7 @@ See `THIRD_PARTY_NOTICES.md` for license details.
 
 from __future__ import annotations
 
+import inspect
 import io
 import logging
 import os
@@ -95,6 +96,11 @@ def process_vad(
     worker_vad_model: object | None,
     segment_threshold_s: int = 120,
     max_segment_threshold_s: int = 180,
+    *,
+    vad_threshold: float = 0.5,
+    vad_min_speech_duration_ms: int = 200,
+    vad_min_silence_duration_ms: int = 200,
+    vad_speech_pad_ms: int = 200,
 ) -> tuple[list[tuple[int, int, np.ndarray]], bool]:
     """
     Segment long audio using Silero VAD timestamps when available, otherwise fall back
@@ -105,14 +111,25 @@ def process_vad(
         if worker_vad_model is None or get_speech_timestamps is None:
             raise RuntimeError("VAD model not available.")
 
+        def _filtered_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
+            try:
+                sig = inspect.signature(get_speech_timestamps)
+                return {k: v for k, v in kwargs.items() if k in sig.parameters}
+            except Exception:  # pragma: no cover
+                return kwargs
+
         vad_params = {
             "sampling_rate": WAV_SAMPLE_RATE,
             "return_seconds": False,
-            "min_speech_duration_ms": 1500,
-            "min_silence_duration_ms": 500,
+            "threshold": float(vad_threshold),
+            "min_speech_duration_ms": int(vad_min_speech_duration_ms),
+            "min_silence_duration_ms": int(vad_min_silence_duration_ms),
+            "speech_pad_ms": int(vad_speech_pad_ms),
         }
 
-        speech_timestamps = get_speech_timestamps(wav, worker_vad_model, **vad_params)
+        speech_timestamps = get_speech_timestamps(
+            wav, worker_vad_model, **_filtered_kwargs(vad_params)
+        )
         if not speech_timestamps:
             raise ValueError("No speech segments detected by VAD.")
 
@@ -176,6 +193,10 @@ def process_vad_speech(
     *,
     max_utterance_s: int = 20,
     merge_gap_ms: int = 300,
+    vad_threshold: float = 0.5,
+    vad_min_speech_duration_ms: int = 200,
+    vad_min_silence_duration_ms: int = 200,
+    vad_speech_pad_ms: int = 200,
 ) -> list[tuple[int, int, np.ndarray]]:
     """
     Split by VAD speech regions (better subtitle time alignment).
@@ -186,13 +207,22 @@ def process_vad_speech(
     if get_speech_timestamps is None:
         raise RuntimeError("silero_vad is not available.")
 
+    def _filtered_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
+        try:
+            sig = inspect.signature(get_speech_timestamps)
+            return {k: v for k, v in kwargs.items() if k in sig.parameters}
+        except Exception:  # pragma: no cover
+            return kwargs
+
     vad_params = {
         "sampling_rate": WAV_SAMPLE_RATE,
         "return_seconds": False,
-        "min_speech_duration_ms": 300,
-        "min_silence_duration_ms": 200,
+        "threshold": float(vad_threshold),
+        "min_speech_duration_ms": int(vad_min_speech_duration_ms),
+        "min_silence_duration_ms": int(vad_min_silence_duration_ms),
+        "speech_pad_ms": int(vad_speech_pad_ms),
     }
-    timestamps = get_speech_timestamps(wav, worker_vad_model, **vad_params)
+    timestamps = get_speech_timestamps(wav, worker_vad_model, **_filtered_kwargs(vad_params))
     if not timestamps:
         return []
 
@@ -232,7 +262,8 @@ def save_audio_file(wav: np.ndarray, file_path: str) -> None:
     dir_name = os.path.dirname(file_path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-    sf.write(file_path, wav, WAV_SAMPLE_RATE)
+    # Use PCM_16 to keep files small (faster disk I/O + less chance to hit upstream size limits).
+    sf.write(file_path, wav, WAV_SAMPLE_RATE, subtype="PCM_16")
 
 
 def transcode_wav_to_mp3(

@@ -49,6 +49,19 @@ DEFAULT_VAD_SEGMENT_THRESHOLD_S = _clamp_int(
 DEFAULT_VAD_MAX_SEGMENT_THRESHOLD_S = _clamp_int(
     _int(_SAVED_CONFIG.get("vad_max_segment_threshold_s"), 180), 60, 360
 )
+try:
+    DEFAULT_VAD_THRESHOLD = float(_SAVED_CONFIG.get("vad_threshold", 0.5))
+except Exception:
+    DEFAULT_VAD_THRESHOLD = 0.5
+DEFAULT_VAD_THRESHOLD = max(0.1, min(0.9, DEFAULT_VAD_THRESHOLD))
+
+DEFAULT_VAD_MIN_SPEECH_DURATION_MS = _clamp_int(
+    _int(_SAVED_CONFIG.get("vad_min_speech_duration_ms"), 200), 50, 2000
+)
+DEFAULT_VAD_MIN_SILENCE_DURATION_MS = _clamp_int(
+    _int(_SAVED_CONFIG.get("vad_min_silence_duration_ms"), 200), 50, 2000
+)
+DEFAULT_VAD_SPEECH_PAD_MS = _clamp_int(_int(_SAVED_CONFIG.get("vad_speech_pad_ms"), 200), 0, 2000)
 DEFAULT_TIMELINE_STRATEGY = _str(_SAVED_CONFIG.get("timeline_strategy", "vad_speech")).strip()
 if DEFAULT_TIMELINE_STRATEGY not in {"chunk", "vad_speech"}:
     DEFAULT_TIMELINE_STRATEGY = "vad_speech"
@@ -91,6 +104,10 @@ def run_asr(
     enable_vad: bool,
     vad_segment_threshold_s: int,
     vad_max_segment_threshold_s: int,
+    vad_threshold: float,
+    vad_min_speech_duration_ms: int,
+    vad_min_silence_duration_ms: int,
+    vad_speech_pad_ms: int,
     timeline_strategy: str,
     vad_speech_max_utterance_s: int,
     vad_speech_merge_gap_ms: int,
@@ -109,7 +126,8 @@ def run_asr(
 
     logger.info(
         "收到转写请求: file=%s, format=%s, language=%s, model=%s, base_url=%s, "
-        "enable_vad=%s, target=%ss, max=%ss, timeline_strategy=%s, upload=%s",
+        "enable_vad=%s, target=%ss, max=%ss, timeline_strategy=%s, upload=%s, "
+        "vad_threshold=%.2f, vad_min_speech_ms=%d, vad_min_silence_ms=%d, vad_pad_ms=%d",
         audio_path,
         output_format,
         lang or "auto",
@@ -120,6 +138,10 @@ def run_asr(
         vad_max_segment_threshold_s,
         timeline_strategy,
         f"{upload_audio_format}/{int(upload_mp3_bitrate_kbps)}k",
+        float(vad_threshold),
+        int(vad_min_speech_duration_ms),
+        int(vad_min_silence_duration_ms),
+        int(vad_speech_pad_ms),
     )
 
     try:
@@ -134,6 +156,10 @@ def run_asr(
             enable_vad=enable_vad,
             vad_segment_threshold_s=int(vad_segment_threshold_s),
             vad_max_segment_threshold_s=int(vad_max_segment_threshold_s),
+            vad_threshold=float(vad_threshold),
+            vad_min_speech_duration_ms=int(vad_min_speech_duration_ms),
+            vad_min_silence_duration_ms=int(vad_min_silence_duration_ms),
+            vad_speech_pad_ms=int(vad_speech_pad_ms),
             timeline_strategy=(timeline_strategy or "").strip() or "vad_speech",
             vad_speech_max_utterance_s=int(vad_speech_max_utterance_s),
             vad_speech_merge_gap_ms=int(vad_speech_merge_gap_ms),
@@ -155,6 +181,10 @@ def save_settings(
     enable_vad: bool,
     vad_segment_threshold_s: int,
     vad_max_segment_threshold_s: int,
+    vad_threshold: float,
+    vad_min_speech_duration_ms: int,
+    vad_min_silence_duration_ms: int,
+    vad_speech_pad_ms: int,
     timeline_strategy: str,
     vad_speech_max_utterance_s: int,
     vad_speech_merge_gap_ms: int,
@@ -171,6 +201,10 @@ def save_settings(
         "timeline_strategy": (timeline_strategy or "").strip() or "vad_speech",
         "upload_audio_format": (upload_audio_format or "").strip() or "mp3",
         "upload_mp3_bitrate_kbps": int(upload_mp3_bitrate_kbps),
+        "vad_threshold": float(vad_threshold),
+        "vad_min_speech_duration_ms": int(vad_min_speech_duration_ms),
+        "vad_min_silence_duration_ms": int(vad_min_silence_duration_ms),
+        "vad_speech_pad_ms": int(vad_speech_pad_ms),
         "vad_speech_max_utterance_s": int(vad_speech_max_utterance_s),
         "vad_speech_merge_gap_ms": int(vad_speech_merge_gap_ms),
         "vad_max_segment_threshold_s": int(vad_max_segment_threshold_s),
@@ -199,6 +233,10 @@ def clear_settings():
         True,
         120,
         180,
+        0.5,
+        200,
+        200,
+        200,
         "vad_speech",
         20,
         300,
@@ -221,6 +259,7 @@ with gr.Blocks(
                 "",
                 "- 若上游不返回 segments（无时间戳），可用 VAD 语音段模式生成更准的字幕轴。",
                 "- 语音段模式会增加调用次数（按语音段逐段转写）。",
+                "- 为了加速，语音段模式默认使用 WAV(PCM16) 上传；分段整段模式可选 MP3 压缩。",
                 "- 部分上游对音频文件大小有限制，建议上传格式选 MP3 压缩。",
                 "- 本项目默认依赖 Silero VAD（首次安装体积较大，会拉取 PyTorch/ONNXRuntime）。",
             ]
@@ -311,6 +350,36 @@ with gr.Blocks(
             label="最大分段时长（秒）",
         )
 
+    with gr.Accordion("VAD 灵敏度（漏字可调低阈值/缩短时长）", open=False):
+        vad_threshold = gr.Slider(
+            minimum=0.1,
+            maximum=0.9,
+            value=DEFAULT_VAD_THRESHOLD,
+            step=0.05,
+            label="VAD 阈值（越低越敏感，越不容易漏语气词）",
+        )
+        vad_min_speech_duration_ms = gr.Slider(
+            minimum=50,
+            maximum=2000,
+            value=DEFAULT_VAD_MIN_SPEECH_DURATION_MS,
+            step=50,
+            label="最小语音时长（ms）",
+        )
+        vad_min_silence_duration_ms = gr.Slider(
+            minimum=50,
+            maximum=2000,
+            value=DEFAULT_VAD_MIN_SILENCE_DURATION_MS,
+            step=50,
+            label="最小静音时长（ms）",
+        )
+        vad_speech_pad_ms = gr.Slider(
+            minimum=0,
+            maximum=2000,
+            value=DEFAULT_VAD_SPEECH_PAD_MS,
+            step=50,
+            label="语音段边缘填充（ms，避免切掉开头/结尾字）",
+        )
+
     with gr.Accordion("字幕轴（上游无 segments 时）", open=True):
         timeline_strategy = gr.Dropdown(
             choices=[
@@ -375,6 +444,10 @@ with gr.Blocks(
             enable_vad,
             vad_segment_threshold_s,
             vad_max_segment_threshold_s,
+            vad_threshold,
+            vad_min_speech_duration_ms,
+            vad_min_silence_duration_ms,
+            vad_speech_pad_ms,
             timeline_strategy,
             vad_speech_max_utterance_s,
             vad_speech_merge_gap_ms,
@@ -395,6 +468,10 @@ with gr.Blocks(
             enable_vad,
             vad_segment_threshold_s,
             vad_max_segment_threshold_s,
+            vad_threshold,
+            vad_min_speech_duration_ms,
+            vad_min_silence_duration_ms,
+            vad_speech_pad_ms,
             timeline_strategy,
             vad_speech_max_utterance_s,
             vad_speech_merge_gap_ms,
@@ -417,6 +494,10 @@ with gr.Blocks(
             enable_vad,
             vad_segment_threshold_s,
             vad_max_segment_threshold_s,
+            vad_threshold,
+            vad_min_speech_duration_ms,
+            vad_min_silence_duration_ms,
+            vad_speech_pad_ms,
             timeline_strategy,
             vad_speech_max_utterance_s,
             vad_speech_merge_gap_ms,

@@ -12,3 +12,4 @@ outputs/
 .env
 .auto_asr_config.json
 Qwen3-ASR-Toolkit/
+GPT-SoVITS/

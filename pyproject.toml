@@ -19,7 +19,7 @@ dev = ["ruff", "pytest"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["Qwen3-ASR-Toolkit"]
+extend-exclude = ["Qwen3-ASR-Toolkit", "GPT-SoVITS"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
