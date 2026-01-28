@@ -24,6 +24,17 @@ class FunASRConfig:
 _MODEL_CACHE: dict[tuple[str, str, bool, bool], Any] = {}
 
 
+def _needs_trust_remote_code(model: str) -> bool:
+    """
+    Some FunASR models require `trust_remote_code=True` to load custom code from the model repo.
+
+    We only enable it for known models to reduce noisy warnings and avoid unexpected failures.
+    """
+
+    m = (model or "").lower()
+    return "sensevoice" in m
+
+
 def _import_funasr() -> Any:
     try:
         from funasr import AutoModel  # type: ignore
@@ -79,12 +90,13 @@ def _make_model(cfg: FunASRConfig) -> Any:
         return _MODEL_CACHE[key]
 
     AutoModel = _import_funasr()
+    trust_remote_code = _needs_trust_remote_code(cfg.model)
 
     model_kwargs: dict[str, Any] = {
         "model": cfg.model,
         "device": cfg.device,
         # Some models (e.g. SenseVoiceSmall) require remote code to enable full features.
-        "trust_remote_code": True,
+        "trust_remote_code": trust_remote_code,
         # FunASR 会在初始化时做版本更新检查 (可能较慢), 这里默认禁用。
         "disable_update": True,
     }
@@ -96,7 +108,17 @@ def _make_model(cfg: FunASRConfig) -> Any:
     if cfg.enable_punc:
         model_kwargs["punc_model"] = "ct-punc"
 
-    model = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+    try:
+        model = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+    except Exception as e:
+        # FunASR 1.3.1 has a known failure mode when `transformers` is missing: it raises
+        # UnboundLocalError about `AutoTokenizer` not being associated with a value.
+        if "AutoTokenizer" in str(e):
+            raise RuntimeError(
+                "FunASR 依赖缺失: 似乎未安装 transformers/sentencepiece. "
+                "请执行 `uv sync --extra funasr` 重新安装依赖。"
+            ) from e
+        raise
     _MODEL_CACHE[key] = model
     logger.info("FunASR 模型已加载: model=%s, device=%s, vad=%s, punc=%s", *key)
     return model
@@ -260,10 +282,11 @@ def download_funasr_model(
         raise RuntimeError("请先选择 FunASR 本地模型。")
 
     AutoModel = _import_funasr()
+    trust_remote_code = _needs_trust_remote_code(model)
     model_kwargs: dict[str, Any] = {
         "model": model,
         "device": "cpu",
-        "trust_remote_code": True,
+        "trust_remote_code": trust_remote_code,
         # FunASR 会在初始化时做版本更新检查 (可能较慢), 这里默认禁用。
         "disable_update": True,
     }
@@ -273,7 +296,15 @@ def download_funasr_model(
     if enable_punc:
         model_kwargs["punc_model"] = "ct-punc"
 
-    _ = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+    try:
+        _ = AutoModel(**_filter_kwargs(AutoModel, model_kwargs))
+    except Exception as e:
+        if "AutoTokenizer" in str(e):
+            raise RuntimeError(
+                "FunASR 依赖缺失: 似乎未安装 transformers/sentencepiece. "
+                "请执行 `uv sync --extra funasr` 重新安装依赖。"
+            ) from e
+        raise
     logger.info(
         "FunASR 模型已下载/初始化(未缓存到进程内): model=%s, vad=%s, punc=%s",
         model,

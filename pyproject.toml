@@ -14,7 +14,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-funasr = ["funasr", "modelscope"]
+funasr = [
+    "funasr",
+    "modelscope",
+    # Some FunASR models rely on HuggingFace tokenizers (AutoTokenizer).
+    "transformers",
+    "sentencepiece",
+]
 
 [dependency-groups]
 dev = ["ruff", "pytest"]

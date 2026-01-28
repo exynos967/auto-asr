@@ -172,12 +172,17 @@ def load_funasr_model_ui(
     funasr_enable_punc: bool,
 ) -> str:
     resolved_device = _resolve_funasr_device_ui(funasr_device)
-    preload_funasr_model(
-        model=(funasr_model or "").strip(),
-        device=resolved_device,
-        enable_vad=bool(funasr_enable_vad),
-        enable_punc=bool(funasr_enable_punc),
-    )
+    try:
+        preload_funasr_model(
+            model=(funasr_model or "").strip(),
+            device=resolved_device,
+            enable_vad=bool(funasr_enable_vad),
+            enable_punc=bool(funasr_enable_punc),
+        )
+    except Exception as e:
+        logger.exception("加载 FunASR 模型失败: model=%s, device=%s", funasr_model, resolved_device)
+        return f"加载失败：{e}"
+
     return f"已加载 FunASR 模型：{(funasr_model or '').strip()}（device={resolved_device}）"
 
 
@@ -186,11 +191,16 @@ def download_funasr_model_ui(
     funasr_enable_vad: bool,
     funasr_enable_punc: bool,
 ) -> str:
-    download_funasr_model(
-        model=(funasr_model or "").strip(),
-        enable_vad=bool(funasr_enable_vad),
-        enable_punc=bool(funasr_enable_punc),
-    )
+    try:
+        download_funasr_model(
+            model=(funasr_model or "").strip(),
+            enable_vad=bool(funasr_enable_vad),
+            enable_punc=bool(funasr_enable_punc),
+        )
+    except Exception as e:
+        logger.exception("下载 FunASR 模型失败: model=%s", funasr_model)
+        return f"下载失败：{e}"
+
     return "下载/初始化完成（已写入缓存目录）。若下次仍需下载，通常是网络/缓存目录权限问题。"
 
 
