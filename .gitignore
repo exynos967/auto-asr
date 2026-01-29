@@ -13,7 +13,6 @@ models/
 .env
 .auto_asr_config.json
 .serena/
-tests/
 VideoCaptioner/
 .worktrees/
 cache/
