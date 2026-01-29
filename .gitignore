@@ -13,5 +13,4 @@ models/
 .env
 .auto_asr_config.json
 .serena/
-Qwen3-ASR-Toolkit/
-GPT-SoVITS/
+tests/
