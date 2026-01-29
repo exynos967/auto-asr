@@ -47,12 +47,12 @@ def save_config(config: dict[str, Any]) -> Path:
 def update_config(patch: dict[str, Any]) -> Path:
     """Load existing config, merge a patch, and save it back.
 
-    Special-case: if patch contains an empty `openai_api_key`, keep the existing one.
+    Special-case: if patch contains an empty API key, keep the existing one.
     """
     cfg = load_config()
 
     for key, value in (patch or {}).items():
-        if key == "openai_api_key" and not str(value or "").strip():
+        if key in {"openai_api_key", "subtitle_openai_api_key"} and not str(value or "").strip():
             continue
         cfg[key] = value
 

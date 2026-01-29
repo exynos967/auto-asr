@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from auto_asr.subtitle_processing.pipeline import process_subtitle_file
@@ -40,8 +42,40 @@ def test_pipeline_runs_split_and_writes_file(tmp_path):
         chat_json=chat_json,
     )
     assert res.out_path.endswith(".srt")
-    out_text = (tmp_path / res.out_path.split("/")[-1]).read_text(encoding="utf-8")
-    assert "a\nb" in out_text
+
+
+def test_pipeline_multi_processors_runs_in_order(tmp_path):
+    p = tmp_path / "a.srt"
+    p.write_text("1\n00:00:00,000 --> 00:00:02,000\nab\n\n", encoding="utf-8")
+
+    from auto_asr.subtitle_processing.pipeline import process_subtitle_file_multi
+
+    def chat_json(*, system_prompt: str, payload: dict[str, str], **_kwargs):
+        key = next(iter(payload.keys()))
+        txt = payload[key]
+        if "proofreader" in system_prompt:
+            return {key: txt}
+        if "sentence splitter" in system_prompt:
+            return {key: "a<br>b"}
+        if "translator" in system_prompt:
+            return {key: txt.upper()}
+        return {key: txt}
+
+    res = process_subtitle_file_multi(
+        str(p),
+        processors=["optimize", "split", "translate"],
+        out_dir=str(tmp_path),
+        options_by_processor={
+            "split": {"mode": "inplace_newlines", "concurrency": 1},
+            "translate": {"target_language": "en", "batch_size": 10, "concurrency": 1},
+            "optimize": {"batch_size": 10, "concurrency": 1},
+        },
+        llm_model="gpt-test",
+        chat_json=chat_json,
+    )
+    assert res.out_path.endswith(".srt")
+    out_text = (tmp_path / Path(res.out_path).name).read_text(encoding="utf-8")
+    assert "A\nB" in out_text
 
 
 def test_pipeline_allows_omitting_api_key_when_custom_chat_json(tmp_path):

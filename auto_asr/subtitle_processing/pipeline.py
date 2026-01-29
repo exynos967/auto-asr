@@ -126,4 +126,66 @@ def process_subtitle_file(
     return SubtitleProcessingResult(out_path=str(out_path), preview_text=preview, debug=debug)
 
 
-__all__ = ["SubtitleProcessingResult", "process_subtitle_file"]
+def process_subtitle_file_multi(
+    in_path: str,
+    *,
+    processors: list[str],
+    out_dir: str,
+    options_by_processor: dict[str, dict] | None,
+    llm_model: str = "gpt-4o-mini",
+    openai_api_key: str = "",
+    openai_base_url: str | None = None,
+    chat_json: Callable[..., dict[str, str]] | None = None,
+) -> SubtitleProcessingResult:
+    """Process a subtitle file with multiple processors in order and write output to disk."""
+    if not processors:
+        raise ValueError("processors must not be empty")
+
+    in_path_p = Path(in_path)
+    lines: list[SubtitleLine] = load_subtitle_file(str(in_path_p))
+
+    if chat_json is None:
+        chat_json = _make_openai_chat_json(
+            api_key=openai_api_key,
+            base_url=openai_base_url,
+            llm_model=(llm_model or "").strip() or "gpt-4o-mini",
+        )
+
+    ctx = ProcessorContext(chat_json=chat_json)
+
+    started = time.time()
+    step_debug: list[str] = []
+    for name in processors:
+        processor_cls = get_processor(name)
+        proc = processor_cls()
+        opts = (options_by_processor or {}).get(name, {})
+        before = len(lines)
+        lines = proc.process(lines, ctx=ctx, options=opts)
+        after = len(lines)
+        step_debug.append(f"{name}:{before}->{after}")
+
+    elapsed_ms = round((time.time() - started) * 1000.0)
+
+    ext = in_path_p.suffix.lower().lstrip(".") or "srt"
+    if ext not in {"srt", "vtt"}:
+        ext = "srt"
+
+    out_text = compose_vtt(lines) if ext == "vtt" else compose_srt(lines)
+
+    chain = "+".join(processors)
+    out_name = f"{in_path_p.stem}--{chain}--{time.strftime('%Y%m%d-%H%M%S')}.{ext}"
+    out_path = Path(out_dir) / out_name
+    _write_text(out_path, out_text)
+
+    preview_lines = [line.text for line in lines[:20] if (line.text or "").strip()]
+    preview = "\n".join(preview_lines).strip()
+    debug = (
+        f"processors={processors}, steps={','.join(step_debug)}, "
+        f"cues_out={len(lines)}, elapsed={elapsed_ms}ms"
+    )
+    logger.info("subtitle processing done: %s", debug)
+
+    return SubtitleProcessingResult(out_path=str(out_path), preview_text=preview, debug=debug)
+
+
+__all__ = ["SubtitleProcessingResult", "process_subtitle_file", "process_subtitle_file_multi"]
