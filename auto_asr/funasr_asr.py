@@ -131,7 +131,12 @@ def _make_model(cfg: FunASRConfig) -> Any:
     different knobs.
     """
 
-    key = (cfg.model, cfg.device, bool(cfg.enable_vad), bool(cfg.enable_punc))
+    enable_vad = bool(cfg.enable_vad) and (not is_funasr_nano(cfg.model))
+    enable_punc = bool(cfg.enable_punc)
+    if bool(cfg.enable_vad) and not enable_vad:
+        logger.info("FunASR-Nano: 内置 VAD 暂不兼容，已自动关闭 funasr_enable_vad")
+
+    key = (cfg.model, cfg.device, enable_vad, enable_punc)
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
 
@@ -159,10 +164,10 @@ def _make_model(cfg: FunASRConfig) -> Any:
         )
 
     # Try to enable built-in VAD / punctuation when requested. These are common in FunASR.
-    if cfg.enable_vad:
+    if enable_vad:
         model_kwargs["vad_model"] = "fsmn-vad"
         model_kwargs["vad_kwargs"] = {"max_single_segment_time": 60000}
-    if cfg.enable_punc:
+    if enable_punc:
         model_kwargs["punc_model"] = "ct-punc"
 
     try:
@@ -586,6 +591,8 @@ def transcribe_file_funasr(
 
     model_obj = _make_model(cfg)
 
+    use_builtin_vad = bool(cfg.enable_vad) and (not is_funasr_nano(cfg.model))
+
     gen_kwargs: dict[str, Any] = {
         "input": file_path,
         "cache": {},
@@ -593,9 +600,10 @@ def transcribe_file_funasr(
         "use_itn": bool(cfg.use_itn),
         # Sensible defaults for long audio; ignored if the model doesn't accept them.
         "batch_size_s": 60,
-        "merge_vad": True,
-        "merge_length_s": 15,
     }
+    if use_builtin_vad:
+        gen_kwargs["merge_vad"] = True
+        gen_kwargs["merge_length_s"] = 15
     if is_funasr_nano(cfg.model):
         # Fun-ASR-Nano (LLM-based) currently does not support batch decoding. Force single-item
         # batches to avoid `NotImplementedError: batch decoding is not implemented`.
@@ -605,7 +613,30 @@ def transcribe_file_funasr(
     try:
         res = model_obj.generate(**_filter_kwargs(model_obj.generate, gen_kwargs))
     except Exception as e:
-        raise RuntimeError(f"FunASR 推理失败: {e}") from e
+        # Some FunASR models may fail in `inference_with_vad` when timestamps are represented as
+        # dicts instead of lists (e.g. KeyError: 0). Retry once without built-in VAD.
+        if use_builtin_vad and isinstance(e, KeyError):
+            logger.warning(
+                "FunASR 内置 VAD 推理失败(KeyError=%s)，将自动关闭 funasr_enable_vad 并重试一次。",
+                e,
+            )
+            cfg2 = FunASRConfig(
+                model=cfg.model,
+                device=cfg.device,
+                language=cfg.language,
+                use_itn=cfg.use_itn,
+                enable_vad=False,
+                enable_punc=cfg.enable_punc,
+            )
+            model_obj = _make_model(cfg2)
+            gen_kwargs.pop("merge_vad", None)
+            gen_kwargs.pop("merge_length_s", None)
+            try:
+                res = model_obj.generate(**_filter_kwargs(model_obj.generate, gen_kwargs))
+            except Exception as e2:
+                raise RuntimeError(f"FunASR 推理失败({type(e2).__name__}): {e2}") from e2
+        else:
+            raise RuntimeError(f"FunASR 推理失败({type(e).__name__}): {e}") from e
 
     text, segments = _extract_segments_from_result(res, duration_s=duration_s)
     return ASRResult(text=text, segments=segments)
