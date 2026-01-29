@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from openai import OpenAI
+
+from auto_asr.llm.client import call_chat_json_agent_loop, normalize_base_url
+from auto_asr.subtitle_io import load_subtitle_file
+from auto_asr.subtitle_processing.base import ProcessorContext, get_processor
+from auto_asr.subtitles import SubtitleLine, compose_srt, compose_vtt
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SubtitleProcessingResult:
+    out_path: str
+    preview_text: str
+    debug: str
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _make_openai_chat_json(
+    *,
+    api_key: str,
+    base_url: str | None,
+    llm_model: str,
+) -> Callable[..., dict[str, str]]:
+    api_key = (api_key or "").strip()
+    if not api_key:
+        raise RuntimeError("请在 Web UI 中填写 OpenAI API Key。")
+
+    base_url_norm = None
+    if base_url and base_url.strip():
+        base_url_norm = normalize_base_url(base_url)
+
+    client = OpenAI(api_key=api_key, base_url=base_url_norm) if base_url_norm else OpenAI(api_key=api_key)
+
+    def chat_fn(messages, *, model: str, temperature: float):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,  # pyright: ignore[reportArgumentType]
+            temperature=temperature,
+        )
+        return resp.choices[0].message.content or ""
+
+    def chat_json(*, system_prompt: str, payload: dict[str, str], **kwargs) -> dict[str, str]:
+        temperature = float(kwargs.get("temperature", 0.2))
+        max_steps = int(kwargs.get("max_steps", 3))
+        return call_chat_json_agent_loop(
+            chat_fn=chat_fn,
+            system_prompt=system_prompt,
+            payload=payload,
+            model=llm_model,
+            temperature=temperature,
+            max_steps=max_steps,
+        )
+
+    return chat_json
+
+
+def process_subtitle_file(
+    in_path: str,
+    *,
+    processor: str,
+    out_dir: str,
+    options: dict,
+    llm_model: str,
+    openai_api_key: str,
+    openai_base_url: str | None,
+    chat_json: Callable[..., dict[str, str]] | None = None,
+) -> SubtitleProcessingResult:
+    """Process a subtitle file and write processed output to disk.
+
+    This pipeline is designed for WebUI usage; it keeps LLM wiring outside processors.
+    """
+    processor_cls = get_processor(processor)
+    proc = processor_cls()
+
+    in_path_p = Path(in_path)
+    lines: list[SubtitleLine] = load_subtitle_file(str(in_path_p))
+
+    if chat_json is None:
+        chat_json = _make_openai_chat_json(
+            api_key=openai_api_key,
+            base_url=openai_base_url,
+            llm_model=(llm_model or "").strip() or "gpt-4o-mini",
+        )
+
+    ctx = ProcessorContext(chat_json=chat_json)
+
+    started = time.time()
+    out_lines = proc.process(lines, ctx=ctx, options=options or {})
+    elapsed_ms = int(round((time.time() - started) * 1000.0))
+
+    ext = in_path_p.suffix.lower().lstrip(".") or "srt"
+    if ext not in {"srt", "vtt"}:
+        ext = "srt"
+
+    if ext == "vtt":
+        out_text = compose_vtt(out_lines)
+    else:
+        out_text = compose_srt(out_lines)
+
+    out_name = f"{in_path_p.stem}--{processor}--{time.strftime('%Y%m%d-%H%M%S')}.{ext}"
+    out_path = Path(out_dir) / out_name
+    _write_text(out_path, out_text)
+
+    preview_lines = [l.text for l in out_lines[:20] if (l.text or "").strip()]
+    preview = "\n".join(preview_lines).strip()
+    debug = f"processor={processor}, cues_in={len(lines)}, cues_out={len(out_lines)}, elapsed={elapsed_ms}ms"
+    logger.info("subtitle processing done: %s", debug)
+
+    return SubtitleProcessingResult(out_path=str(out_path), preview_text=preview, debug=debug)
+
+
+__all__ = ["SubtitleProcessingResult", "process_subtitle_file"]
+
