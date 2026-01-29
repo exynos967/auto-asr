@@ -10,8 +10,7 @@ from auto_asr.subtitles import SubtitleLine
 class ProcessorContext:
     """Inputs shared by all processors."""
 
-    llm_chat_json: Callable[..., dict[str, str]]
-    llm_model: str
+    chat_json: Callable[..., dict[str, str]]
 
 
 class SubtitleProcessor:
@@ -22,7 +21,9 @@ class SubtitleProcessor:
 
     name: str = ""
 
-    def process(self, lines: list[SubtitleLine], *, ctx: ProcessorContext, options: dict) -> list[SubtitleLine]:
+    def process(
+        self, lines: list[SubtitleLine], *, ctx: ProcessorContext, options: dict
+    ) -> list[SubtitleLine]:
         raise NotImplementedError
 
 
@@ -48,5 +49,10 @@ def get_processor(name: str) -> type[SubtitleProcessor]:
     return _PROCESSORS[key]
 
 
-__all__ = ["ProcessorContext", "SubtitleProcessor", "get_processor", "list_processors", "register_processor"]
-
+__all__ = [
+    "ProcessorContext",
+    "SubtitleProcessor",
+    "get_processor",
+    "list_processors",
+    "register_processor",
+]
