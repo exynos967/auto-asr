@@ -13,6 +13,7 @@ from typing import Any
 
 from auto_asr.audio_tools import load_audio, process_vad_speech, transcode_wav_to_mp3
 from auto_asr.funasr_asr import release_funasr_resources, transcribe_file_funasr
+from auto_asr.funasr_models import is_funasr_nano
 from auto_asr.openai_asr import make_openai_client, transcribe_file_verbose
 from auto_asr.subtitles import SubtitleLine, compose_srt, compose_txt, compose_vtt
 from auto_asr.vad_split import (
@@ -139,6 +140,125 @@ def transcribe_to_subtitles(
                 # if user set language in UI, prefer it over funasr_language
                 lang = language
             _check_cancel(cancel_event)
+
+            # FunASR-Nano 长音频如果整段推理, 容易因注意力矩阵过大导致 CUDA OOM.
+            # 当用户启用了 VAD 语音段时间轴策略时, 直接走 VAD 语音段逐段转写以避免 OOM.
+            if (
+                is_funasr_nano(funasr_model)
+                and enable_vad
+                and timeline_strategy == "vad_speech"
+                and duration_s > float(vad_speech_max_utterance_s)
+            ):
+                vad_model = get_vad_model()
+                if vad_model is None:
+                    logger.info(
+                        "FunASR-Nano 长音频检测到但 VAD 模型不可用，将尝试整段推理(可能 OOM)。"
+                    )
+                else:
+                    regions = process_vad_speech(
+                        wav_for_duration,
+                        vad_model,
+                        max_utterance_s=int(vad_speech_max_utterance_s),
+                        merge_gap_ms=int(vad_speech_merge_gap_ms),
+                        vad_threshold=float(vad_threshold),
+                        vad_min_speech_duration_ms=int(vad_min_speech_duration_ms),
+                        vad_min_silence_duration_ms=int(vad_min_silence_duration_ms),
+                        vad_speech_pad_ms=int(vad_speech_pad_ms),
+                    )
+                    if regions:
+                        subtitle_lines: list[SubtitleLine] = []
+                        full_text_parts: list[str] = []
+
+                        logger.info(
+                            "FunASR-Nano 长音频启用 VAD 语音段模式以避免 OOM: regions=%d, "
+                            "max_utterance=%ss, merge_gap=%dms",
+                            len(regions),
+                            int(vad_speech_max_utterance_s),
+                            int(vad_speech_merge_gap_ms),
+                        )
+
+                        with TemporaryDirectory(prefix="auto-asr-funasr-") as tmp_dir:
+                            for idx, (start_sample, end_sample, wav_region) in enumerate(regions):
+                                _check_cancel(cancel_event)
+                                region_wav_path = os.path.join(tmp_dir, f"region_{idx:06d}.wav")
+                                save_audio_file(wav_region, region_wav_path)
+
+                                region_dur_s = (end_sample - start_sample) / float(WAV_SAMPLE_RATE)
+                                seg_asr = transcribe_file_funasr(
+                                    file_path=region_wav_path,
+                                    model=funasr_model,
+                                    device=resolved_device,
+                                    language=lang,
+                                    use_itn=bool(funasr_use_itn),
+                                    enable_vad=bool(funasr_enable_vad),
+                                    enable_punc=bool(funasr_enable_punc),
+                                    duration_s=region_dur_s,
+                                )
+
+                                seg_text = (seg_asr.text or "").strip()
+                                if seg_text:
+                                    full_text_parts.append(seg_text)
+
+                                if output_format in {"srt", "vtt"}:
+                                    offset_s = start_sample / float(WAV_SAMPLE_RATE)
+                                    if seg_asr.segments:
+                                        for seg in seg_asr.segments:
+                                            subtitle_lines.append(
+                                                SubtitleLine(
+                                                    start_s=offset_s + seg.start_s,
+                                                    end_s=offset_s + seg.end_s,
+                                                    text=seg.text,
+                                                )
+                                            )
+                                    else:
+                                        subtitle_lines.append(
+                                            SubtitleLine(
+                                                start_s=offset_s,
+                                                end_s=offset_s + max(region_dur_s, 0.01),
+                                                text=seg_text or seg_asr.text,
+                                            )
+                                        )
+
+                        subtitle_lines.sort(key=lambda x: (x.start_s, x.end_s))
+                        full_text = "\n".join([t for t in full_text_parts if t]).strip()
+
+                        if output_format == "srt":
+                            subtitle_text = compose_srt(subtitle_lines)
+                            ext = "srt"
+                        elif output_format == "vtt":
+                            subtitle_text = compose_vtt(subtitle_lines)
+                            ext = "vtt"
+                        else:
+                            subtitle_text = compose_txt(full_text)
+                            ext = "txt"
+
+                        out_base = (
+                            f"{_safe_stem(input_audio_path)}-{time.strftime('%Y%m%d-%H%M%S')}"
+                        )
+                        out_path = Path(outputs_dir) / f"{out_base}.{ext}"
+                        _write_text(out_path, subtitle_text)
+
+                        preview = subtitle_text[:5000]
+                        seg_count = len(subtitle_lines) if output_format in {"srt", "vtt"} else 0
+                        debug = (
+                            f"backend=funasr, model={funasr_model}, device={resolved_device}, "
+                            f"segments={seg_count}, duration_s={duration_s:.2f}, "
+                            "vad_speech_fallback=on(force=nano)"
+                        )
+                        logger.info(
+                            "转写完成(funasr/nano_vad_speech): out=%s, segments=%d, duration=%.2fs",
+                            out_path,
+                            seg_count,
+                            duration_s,
+                        )
+                        return PipelineResult(
+                            preview_text=preview,
+                            full_text=full_text,
+                            subtitle_file_path=str(out_path),
+                            debug=debug,
+                        )
+                    logger.info("VAD 未检测到语音段，将尝试整段推理(可能 OOM)。")
+
             asr = transcribe_file_funasr(
                 file_path=input_audio_path,
                 model=funasr_model,

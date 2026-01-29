@@ -52,7 +52,7 @@ if DEFAULT_FUNASR_DEVICE not in {"auto", "cpu", "cuda:0"}:
     DEFAULT_FUNASR_DEVICE = "auto"
 DEFAULT_FUNASR_LANGUAGE = _str(_SAVED_CONFIG.get("funasr_language", "auto")).strip() or "auto"
 DEFAULT_FUNASR_USE_ITN = bool(_SAVED_CONFIG.get("funasr_use_itn", True))
-DEFAULT_FUNASR_ENABLE_VAD = bool(_SAVED_CONFIG.get("funasr_enable_vad", True))
+DEFAULT_FUNASR_ENABLE_VAD = bool(_SAVED_CONFIG.get("funasr_enable_vad", False))
 DEFAULT_FUNASR_ENABLE_PUNC = bool(_SAVED_CONFIG.get("funasr_enable_punc", True))
 DEFAULT_OUTPUT_FORMAT = _str(_SAVED_CONFIG.get("output_format", "srt")).strip() or "srt"
 if DEFAULT_OUTPUT_FORMAT not in {"srt", "vtt", "txt"}:
