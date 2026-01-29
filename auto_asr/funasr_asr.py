@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import inspect
 import logging
 import re
 from dataclasses import dataclass
+from gc import collect as gc_collect
 from typing import Any
 
 from auto_asr.funasr_models import get_remote_code_candidates, is_funasr_nano, resolve_model_dir
@@ -694,8 +696,31 @@ def download_funasr_model(
     )
 
 
+def release_funasr_resources() -> None:
+    """Best-effort release FunASR model CPU/GPU memory for this process."""
+
+    cached = len(_MODEL_CACHE)
+    _MODEL_CACHE.clear()
+
+    # Drop Python references first.
+    with contextlib.suppress(Exception):
+        gc_collect()
+
+    # Drop CUDA allocator caches if available.
+    with contextlib.suppress(Exception):
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            with contextlib.suppress(Exception):
+                torch.cuda.ipc_collect()
+
+    logger.info("FunASR 资源清理完成: cleared_models=%d", cached)
+
+
 __all__ = [
     "download_funasr_model",
     "preload_funasr_model",
+    "release_funasr_resources",
     "transcribe_file_funasr",
 ]

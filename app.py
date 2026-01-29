@@ -6,7 +6,11 @@ from threading import Event, Lock
 import gradio as gr
 
 from auto_asr.config import get_config_path, load_config, save_config
-from auto_asr.funasr_asr import download_funasr_model, preload_funasr_model
+from auto_asr.funasr_asr import (
+    download_funasr_model,
+    preload_funasr_model,
+    release_funasr_resources,
+)
 from auto_asr.model_hub import get_models_dir
 from auto_asr.pipeline import transcribe_to_subtitles
 
@@ -203,6 +207,15 @@ def download_funasr_model_ui(
         return f"下载失败：{e}"
 
     return f"下载完成：模型文件已下载到项目目录 `{get_models_dir()}`。"
+
+
+def release_cuda_ui() -> str:
+    try:
+        release_funasr_resources()
+    except Exception as e:
+        logger.exception("释放显存失败")
+        return f"释放失败：{e}"
+    return "已释放 FunASR 模型缓存/显存（如仍显示占用，通常是 PyTorch 缓存行为）。"
 
 
 def _auto_save_settings(
@@ -518,8 +531,10 @@ with gr.Blocks(
                 with gr.Row():
                     download_model_btn = gr.Button("下载模型", variant="secondary")
                     load_model_btn = gr.Button("加载模型", variant="primary")
+                    release_cuda_btn = gr.Button("释放显存", variant="secondary")
                 download_model_status = gr.Markdown()
                 load_model_status = gr.Markdown()
+                release_cuda_status = gr.Markdown()
                 funasr_device = gr.Dropdown(
                     choices=[
                         ("自动", "auto"),
@@ -661,6 +676,9 @@ with gr.Blocks(
         fn=load_funasr_model_ui,
         inputs=[funasr_model, funasr_device, funasr_enable_vad, funasr_enable_punc],
         outputs=[load_model_status],
+    )
+    release_cuda_btn.click(
+        fn=release_cuda_ui, inputs=[], outputs=[release_cuda_status], queue=False
     )
 
     run_event = run_btn.click(
