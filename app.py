@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from threading import Event, Lock
 
 import gradio as gr
 
-from auto_asr.config import get_config_path, load_config, save_config
+from auto_asr.config import get_config_path, load_config, save_config, update_config
 from auto_asr.funasr_asr import (
     download_funasr_model,
     preload_funasr_model,
@@ -13,6 +14,7 @@ from auto_asr.funasr_asr import (
 )
 from auto_asr.model_hub import get_models_dir
 from auto_asr.pipeline import transcribe_to_subtitles
+from auto_asr.subtitle_processing.pipeline import process_subtitle_file
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +44,7 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
 DEFAULT_OPENAI_API_KEY = _str(_SAVED_CONFIG.get("openai_api_key")).strip()
 DEFAULT_OPENAI_BASE_URL = _str(_SAVED_CONFIG.get("openai_base_url")).strip()
 DEFAULT_MODEL = _str(_SAVED_CONFIG.get("model", "whisper-1")).strip() or "whisper-1"
+DEFAULT_LLM_MODEL = _str(_SAVED_CONFIG.get("llm_model", "gpt-4o-mini")).strip() or "gpt-4o-mini"
 DEFAULT_ASR_BACKEND = _str(_SAVED_CONFIG.get("asr_backend", "openai")).strip() or "openai"
 if DEFAULT_ASR_BACKEND not in {"openai", "funasr"}:
     DEFAULT_ASR_BACKEND = "openai"
@@ -224,6 +227,7 @@ def _auto_save_settings(
     openai_api_key: str,
     openai_base_url: str,
     model: str,
+    llm_model: str,
     funasr_model: str,
     funasr_device: str,
     funasr_language: str,
@@ -261,6 +265,7 @@ def _auto_save_settings(
         "funasr_use_itn": bool(funasr_use_itn),
         "language": (language or "").strip() or "auto",
         "model": (model or "").strip() or "whisper-1",
+        "llm_model": (llm_model or "").strip() or "gpt-4o-mini",
         "openai_api_key": api_key,
         "openai_base_url": (openai_base_url or "").strip(),
         "output_format": (output_format or "").strip() or "srt",
@@ -288,6 +293,7 @@ def run_asr(
     openai_api_key: str,
     openai_base_url: str,
     model: str,
+    llm_model: str,
     funasr_model: str,
     funasr_device: str,
     funasr_language: str,
@@ -349,6 +355,7 @@ def run_asr(
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
         model=model,
+        llm_model=llm_model,
         funasr_model=funasr_model,
         funasr_device=funasr_device,
         funasr_language=funasr_language,
@@ -415,6 +422,66 @@ def run_asr(
         _set_current_cancel_event(None)
 
     return result.preview_text, result.full_text, result.subtitle_file_path, result.debug
+
+
+def run_subtitle_processing(
+    subtitle_path: str | None,
+    subtitle_processor: str,
+    openai_api_key: str,
+    openai_base_url: str,
+    llm_model: str,
+    target_language: str,
+    split_mode: str,
+    custom_prompt: str,
+    batch_size: int,
+    concurrency: int,
+):
+    if not subtitle_path:
+        raise gr.Error("请先上传字幕文件（SRT/VTT）。")
+    if not (openai_api_key or "").strip():
+        raise gr.Error("请先在「引擎配置」中填写 OpenAI API Key。")
+
+    base_url = (openai_base_url or "").strip() or None
+    llm_model = (llm_model or "").strip() or DEFAULT_LLM_MODEL
+
+    options: dict[str, object] = {"concurrency": int(concurrency)}
+    if subtitle_processor == "translate":
+        options.update(
+            {
+                "target_language": (target_language or "").strip() or "zh",
+                "custom_prompt": (custom_prompt or "").strip(),
+                "batch_size": int(batch_size),
+            }
+        )
+    elif subtitle_processor == "optimize":
+        options.update(
+            {
+                "custom_prompt": (custom_prompt or "").strip(),
+                "batch_size": int(batch_size),
+            }
+        )
+    elif subtitle_processor == "split":
+        options.update({"mode": (split_mode or "").strip() or "inplace_newlines"})
+
+    update_config(
+        {
+            "openai_api_key": (openai_api_key or "").strip(),
+            "openai_base_url": (openai_base_url or "").strip(),
+            "llm_model": llm_model,
+        }
+    )
+
+    res = process_subtitle_file(
+        subtitle_path,
+        processor=(subtitle_processor or "").strip(),
+        out_dir=str(Path("outputs") / "processed"),
+        options=options,
+        llm_model=llm_model,
+        openai_api_key=openai_api_key,
+        openai_base_url=base_url,
+        chat_json=None,
+    )
+    return res.preview_text, res.out_path, res.debug
 
 
 with gr.Blocks(
@@ -493,6 +560,84 @@ with gr.Blocks(
                 out_file = gr.File(label="下载")
                 debug = gr.Textbox(label="调试信息", lines=2)
 
+        with gr.Tab("字幕处理", id="tab_subtitle"):
+            gr.Markdown(
+                "\n".join(
+                    [
+                        "对已有字幕文件（SRT/VTT）进行 **校正 / 翻译 / 分割**。",
+                        "使用「引擎配置」里的 OpenAI Key/BaseURL/LLM 模型名。",
+                    ]
+                )
+            )
+
+            subtitle_in = gr.File(
+                label="字幕文件（SRT/VTT）",
+                file_types=[".srt", ".vtt"],
+                type="filepath",
+            )
+            subtitle_processor = gr.Dropdown(
+                choices=[
+                    ("字幕校正（LLM）", "optimize"),
+                    ("字幕翻译（LLM）", "translate"),
+                    ("字幕分割（LLM）", "split"),
+                ],
+                value="optimize",
+                label="处理类型",
+            )
+
+            with gr.Row():
+                target_language = gr.Dropdown(
+                    choices=[
+                        ("中文", "zh"),
+                        ("英语", "en"),
+                        ("日语", "ja"),
+                        ("韩语", "ko"),
+                        ("法语", "fr"),
+                        ("德语", "de"),
+                        ("西语", "es"),
+                        ("俄语", "ru"),
+                    ],
+                    value="zh",
+                    label="目标语言（仅翻译）",
+                )
+                split_mode = gr.Dropdown(
+                    choices=[
+                        ("仅换行（不改时间轴）", "inplace_newlines"),
+                        ("拆分为多条（会改时间轴）", "split_to_cues"),
+                    ],
+                    value="inplace_newlines",
+                    label="分割模式（仅分割）",
+                )
+
+            custom_prompt = gr.Textbox(
+                label="自定义提示词（可选）",
+                placeholder="可补充术语/风格要求/注意事项等。",
+            )
+
+            with gr.Row():
+                batch_size = gr.Slider(
+                    minimum=1,
+                    maximum=200,
+                    value=30,
+                    step=1,
+                    label="Batch Size（翻译/校正）",
+                )
+                subtitle_concurrency = gr.Slider(
+                    minimum=1,
+                    maximum=16,
+                    value=4,
+                    step=1,
+                    label="并发数",
+                )
+
+            subtitle_run_btn = gr.Button("开始处理字幕", variant="primary")
+
+            with gr.Row():
+                subtitle_preview = gr.Textbox(label="预览", lines=12)
+            with gr.Row():
+                subtitle_out_file = gr.File(label="下载")
+                subtitle_debug = gr.Textbox(label="调试信息", lines=2)
+
         with gr.Tab("引擎配置", id="tab_engine"):
             gr.Markdown(CUDA_NOTE)
             with gr.Accordion("OpenAI 配置", open=True):
@@ -510,6 +655,10 @@ with gr.Blocks(
                 model = gr.Textbox(
                     label="模型名",
                     value=DEFAULT_MODEL,
+                )
+                llm_model = gr.Textbox(
+                    label="LLM 模型名（字幕处理）",
+                    value=DEFAULT_LLM_MODEL,
                 )
 
             with gr.Accordion("FunASR 本地推理", open=False):
@@ -680,6 +829,24 @@ with gr.Blocks(
         fn=release_cuda_ui, inputs=[], outputs=[release_cuda_status], queue=False
     )
 
+    subtitle_run_btn.click(
+        fn=run_subtitle_processing,
+        inputs=[
+            subtitle_in,
+            subtitle_processor,
+            openai_api_key,
+            openai_base_url,
+            llm_model,
+            target_language,
+            split_mode,
+            custom_prompt,
+            batch_size,
+            subtitle_concurrency,
+        ],
+        outputs=[subtitle_preview, subtitle_out_file, subtitle_debug],
+        concurrency_limit=1,
+    )
+
     run_event = run_btn.click(
         fn=run_asr,
         inputs=[
@@ -688,6 +855,7 @@ with gr.Blocks(
             openai_api_key,
             openai_base_url,
             model,
+            llm_model,
             funasr_model,
             funasr_device,
             funasr_language,
