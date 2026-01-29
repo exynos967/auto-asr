@@ -497,7 +497,7 @@ with gr.Blocks(
             gr.Markdown(CUDA_NOTE)
             with gr.Accordion("OpenAI 配置", open=True):
                 openai_api_key = gr.Textbox(
-                    label="OpenAI API Key（会明文保存在本机配置文件里）",
+                    label="OpenAI API Key",
                     type="password",
                     placeholder="sk-...",
                     value=DEFAULT_OPENAI_API_KEY,
@@ -508,7 +508,7 @@ with gr.Blocks(
                     value=DEFAULT_OPENAI_BASE_URL,
                 )
                 model = gr.Textbox(
-                    label="模型（默认 whisper-1）",
+                    label="模型名",
                     value=DEFAULT_MODEL,
                 )
 
@@ -645,12 +645,12 @@ with gr.Blocks(
                     label="合并相邻语音段的静音阈值（毫秒）",
                 )
 
-        with gr.Tab("性能与上传", id="tab_perf"):
-            with gr.Accordion("上传优化（避免上游文件过大）", open=True):
+        with gr.Tab("性能", id="tab_perf"):
+            with gr.Accordion("上传限制", open=True):
                 upload_audio_format = gr.Dropdown(
                     choices=[
-                        ("WAV 无压缩（可能触发上游大小限制）", "wav"),
-                        ("MP3 压缩（固定 192kbps）", "mp3"),
+                        ("WAV 无压缩", "wav"),
+                        ("MP3 压缩", "mp3"),
                     ],
                     value=DEFAULT_UPLOAD_AUDIO_FORMAT,
                     label="上传音频格式",
@@ -662,7 +662,7 @@ with gr.Blocks(
                     maximum=16,
                     value=DEFAULT_API_CONCURRENCY,
                     step=1,
-                    label="并发请求数（仅 VAD 语音段模式生效）",
+                    label="并发请求数",
                 )
 
     download_model_btn.click(
