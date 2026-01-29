@@ -7,6 +7,7 @@ import gradio as gr
 
 from auto_asr.config import get_config_path, load_config, save_config
 from auto_asr.funasr_asr import download_funasr_model, preload_funasr_model
+from auto_asr.model_hub import get_models_dir
 from auto_asr.pipeline import transcribe_to_subtitles
 
 logging.basicConfig(
@@ -201,7 +202,7 @@ def download_funasr_model_ui(
         logger.exception("下载 FunASR 模型失败: model=%s", funasr_model)
         return f"下载失败：{e}"
 
-    return "下载/初始化完成（已写入缓存目录）。若下次仍需下载，通常是网络/缓存目录权限问题。"
+    return f"下载完成：模型文件已下载到项目目录 `{get_models_dir()}`。"
 
 
 def _auto_save_settings(
@@ -501,6 +502,7 @@ with gr.Blocks(
 
             with gr.Accordion("FunASR 本地推理", open=False):
                 gr.Markdown("首次使用需安装：`uv sync --extra funasr`")
+                gr.Markdown(f"模型下载目录（项目内）：`{get_models_dir()}`")
                 funasr_model = gr.Dropdown(
                     choices=[
                         ("SenseVoiceSmall（iic/SenseVoiceSmall）", "iic/SenseVoiceSmall"),

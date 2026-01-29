@@ -28,10 +28,12 @@ FunASR 本地模型（HuggingFace）：
 
 模型存放位置：
 
-- 在 WebUI 的「引擎配置 -> FunASR」点击「下载模型」会将模型下载到缓存目录（由 FunASR/底层下载器决定）。
-- 常见缓存位置：
-  - HuggingFace: Linux/macOS `~/.cache/huggingface/hub`；Windows `%USERPROFILE%\\.cache\\huggingface\\hub`
-  - ModelScope: Linux/macOS `~/.cache/modelscope/hub`；Windows `%USERPROFILE%\\.cache\\modelscope\\hub`
+- 在 WebUI 的「引擎配置 -> FunASR」点击「下载模型」会将模型下载到项目根目录的 `./models/`（已加入 `.gitignore`）。
+- 目录结构取决于底层下载器：
+  - ModelScope 通常在 `./models/hub/models/<组织>/<模型名>/...`
+  - HuggingFace 通常在 `./models/huggingface/hub/...`
+- `FunAudioLLM/Fun-ASR-Nano-2512` 还会自动下载依赖模型 `Qwen/Qwen3-0.6B`，并放置/链接到
+  `<Fun-ASR-Nano-2512>/Qwen3-0.6B`（体积较大，首次下载较慢）。
 
 Windows + Python 3.12 可能会遇到 `llvmlite/numba` 依赖不兼容导致安装失败（例如报错 *Cannot install on Python version 3.12*）。
 建议改用 Python 3.11（或 3.10）创建环境后再安装（本项目已将 `numpy` 约束到 `numpy<2.2`，以避免 `numba` 选择到不兼容版本）：
