@@ -659,7 +659,7 @@ with gr.Blocks(
             with gr.Accordion("LLM 提供商（仅字幕处理）", open=True):
                 subtitle_provider = gr.Dropdown(
                     choices=[
-                        ("OpenAI 兼容（OpenAI/OneAPI/DeepSeek 等）", "openai"),
+                        ("OpenAI 兼容", "openai"),
                     ],
                     value=DEFAULT_SUBTITLE_PROVIDER,
                     label="提供商",
