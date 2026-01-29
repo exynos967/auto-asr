@@ -71,6 +71,10 @@ class SplitProcessor(SubtitleProcessor):
     def process(
         self, lines: list[SubtitleLine], *, ctx: ProcessorContext, options: dict
     ) -> list[SubtitleLine]:
+        strategy = str(options.get("strategy") or "").strip() or "semantic"
+        if strategy not in {"semantic", "sentence"}:
+            strategy = "semantic"
+
         mode = str(options.get("mode") or "").strip() or "inplace_newlines"
         if mode not in {"inplace_newlines", "split_to_cues"}:
             mode = "inplace_newlines"
@@ -79,9 +83,20 @@ class SplitProcessor(SubtitleProcessor):
         concurrency = int(options.get("concurrency") or 4)
         concurrency = max(1, min(32, concurrency))
 
+        if strategy == "sentence":
+            strategy_instruction = "Split at natural sentence boundaries (punctuation/pauses)."
+            strategy_hint = "sentence boundaries"
+        else:
+            strategy_instruction = (
+                "Split at semantic boundaries for readability (you may split within a sentence)."
+            )
+            strategy_hint = "semantic boundaries"
+
         system_prompt = (
-            "You are a subtitle sentence splitter.\n"
-            f"Insert `{delimiter}` into the text to split it into shorter semantic chunks.\n"
+            "You are a professional subtitle splitter.\n"
+            f"{strategy_instruction}\n"
+            f"Strategy: {strategy_hint}\n"
+            f"Insert `{delimiter}` into the text to split it.\n"
             "Keep the original text unchanged except inserting the delimiter.\n"
             "Return ONLY a valid JSON dictionary mapping the SAME keys to the processed text.\n"
             "Do not add or remove keys.\n"

@@ -63,6 +63,11 @@ DEFAULT_SUBTITLE_OPENAI_BASE_URL = _str(
 DEFAULT_SUBTITLE_LLM_MODEL = _str(
     _SAVED_CONFIG.get("subtitle_llm_model", _SAVED_CONFIG.get("llm_model", "gpt-4o-mini"))
 ).strip() or "gpt-4o-mini"
+DEFAULT_SUBTITLE_SPLIT_STRATEGY = (
+    _str(_SAVED_CONFIG.get("subtitle_split_strategy", "semantic")).strip() or "semantic"
+)
+if DEFAULT_SUBTITLE_SPLIT_STRATEGY not in {"semantic", "sentence"}:
+    DEFAULT_SUBTITLE_SPLIT_STRATEGY = "semantic"
 
 DEFAULT_FUNASR_MODEL = _str(_SAVED_CONFIG.get("funasr_model", "iic/SenseVoiceSmall")).strip()
 DEFAULT_FUNASR_DEVICE = _str(_SAVED_CONFIG.get("funasr_device", "auto")).strip() or "auto"
@@ -443,6 +448,7 @@ def run_subtitle_processing(
     subtitle_openai_base_url: str,
     subtitle_llm_model: str,
     target_language: str,
+    split_strategy: str,
     split_mode: str,
     custom_prompt: str,
     batch_size: int,
@@ -486,6 +492,7 @@ def run_subtitle_processing(
     if "split" in selected:
         options_by_processor["split"] = {
             **common,
+            "strategy": (split_strategy or "").strip() or "semantic",
             "mode": (split_mode or "").strip() or "inplace_newlines",
         }
 
@@ -495,6 +502,7 @@ def run_subtitle_processing(
             "subtitle_openai_api_key": api_key,
             "subtitle_openai_base_url": (subtitle_openai_base_url or "").strip(),
             "subtitle_llm_model": llm_model,
+            "subtitle_split_strategy": (split_strategy or "").strip() or "semantic",
         }
     )
 
@@ -666,13 +674,21 @@ with gr.Blocks(
                     value="zh",
                     label="目标语言（仅翻译）",
                 )
+                split_strategy = gr.Dropdown(
+                    choices=[
+                        ("语义断句（更易读，适合长句/无标点）", "semantic"),
+                        ("按句子断句（更保守，尽量按标点）", "sentence"),
+                    ],
+                    value=DEFAULT_SUBTITLE_SPLIT_STRATEGY,
+                    label="断句方式（仅断句）",
+                )
                 split_mode = gr.Dropdown(
                     choices=[
-                        ("仅换行（不改时间轴）", "inplace_newlines"),
-                        ("拆分为多条（会改时间轴）", "split_to_cues"),
+                        ("只插入换行（不改变时间轴）", "inplace_newlines"),
+                        ("拆分为多条字幕（重新分配时间轴）", "split_to_cues"),
                     ],
                     value="inplace_newlines",
-                    label="分割模式（仅分割）",
+                    label="输出形式（仅断句）",
                 )
 
             custom_prompt = gr.Textbox(
@@ -901,6 +917,7 @@ with gr.Blocks(
             subtitle_openai_base_url,
             subtitle_llm_model,
             target_language,
+            split_strategy,
             split_mode,
             custom_prompt,
             batch_size,

@@ -43,6 +43,40 @@ def test_split_processor_inplace_newlines():
     assert out[0].start_s == 0.0 and out[0].end_s == 2.0
 
 
+def test_split_processor_strategy_semantic_uses_semantic_prompt():
+    def chat_json(*, system_prompt: str, payload: dict[str, str], **_kwargs):
+        assert "semantic boundaries" in system_prompt
+        key = next(iter(payload.keys()))
+        return {key: "a<br>b"}
+
+    proc = SplitProcessor()
+    ctx = ProcessorContext(chat_json=chat_json)
+    lines = [SubtitleLine(start_s=0.0, end_s=2.0, text="ab")]
+    out = proc.process(
+        lines,
+        ctx=ctx,
+        options={"mode": "inplace_newlines", "strategy": "semantic", "concurrency": 1},
+    )
+    assert out[0].text == "a\nb"
+
+
+def test_split_processor_strategy_sentence_uses_sentence_prompt():
+    def chat_json(*, system_prompt: str, payload: dict[str, str], **_kwargs):
+        assert "sentence boundaries" in system_prompt
+        key = next(iter(payload.keys()))
+        return {key: "a<br>b"}
+
+    proc = SplitProcessor()
+    ctx = ProcessorContext(chat_json=chat_json)
+    lines = [SubtitleLine(start_s=0.0, end_s=2.0, text="ab")]
+    out = proc.process(
+        lines,
+        ctx=ctx,
+        options={"mode": "inplace_newlines", "strategy": "sentence", "concurrency": 1},
+    )
+    assert out[0].text == "a\nb"
+
+
 def test_split_processor_falls_back_when_content_changes():
     def chat_json(*, system_prompt: str, payload: dict[str, str], **_kwargs):
         key = next(iter(payload.keys()))

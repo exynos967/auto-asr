@@ -55,7 +55,7 @@ def test_pipeline_multi_processors_runs_in_order(tmp_path):
         txt = payload[key]
         if "proofreader" in system_prompt:
             return {key: txt}
-        if "sentence splitter" in system_prompt:
+        if "subtitle splitter" in system_prompt:
             return {key: "a<br>b"}
         if "translator" in system_prompt:
             return {key: txt.upper()}
