@@ -16,6 +16,7 @@ def test_save_subtitle_provider_settings_saves_values(tmp_path, monkeypatch):
         openai_api_key="sk-test",
         openai_base_url="https://api.openai.com/v1",
         llm_model="gpt-test",
+        llm_temperature=0.2,
         split_strategy="semantic",
     )
 
@@ -24,6 +25,7 @@ def test_save_subtitle_provider_settings_saves_values(tmp_path, monkeypatch):
     assert loaded["subtitle_openai_api_key"] == "sk-test"
     assert loaded["subtitle_openai_base_url"] == "https://api.openai.com/v1"
     assert loaded["subtitle_llm_model"] == "gpt-test"
+    assert loaded["subtitle_llm_temperature"] == 0.2
     assert loaded["subtitle_split_strategy"] == "semantic"
 
 
@@ -40,9 +42,9 @@ def test_save_subtitle_provider_settings_preserves_api_key_when_blank(tmp_path, 
         openai_api_key="",
         openai_base_url="",
         llm_model="gpt-test",
+        llm_temperature=0.2,
         split_strategy="semantic",
     )
 
     loaded = config.load_config()
     assert loaded["subtitle_openai_api_key"] == "sk-old"
-

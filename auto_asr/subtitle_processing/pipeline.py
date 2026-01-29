@@ -33,6 +33,7 @@ def _make_openai_chat_json(
     api_key: str,
     base_url: str | None,
     llm_model: str,
+    llm_temperature: float = 0.2,
 ) -> Callable[..., dict[str, str]]:
     api_key = (api_key or "").strip()
     if not api_key:
@@ -57,7 +58,7 @@ def _make_openai_chat_json(
         return resp.choices[0].message.content or ""
 
     def chat_json(*, system_prompt: str, payload: dict[str, str], **kwargs) -> dict[str, str]:
-        temperature = float(kwargs.get("temperature", 0.2))
+        temperature = float(kwargs.get("temperature", llm_temperature))
         max_steps = int(kwargs.get("max_steps", 3))
         return call_chat_json_agent_loop(
             chat_fn=chat_fn,
@@ -78,6 +79,7 @@ def process_subtitle_file(
     out_dir: str,
     options: dict,
     llm_model: str = "gpt-4o-mini",
+    llm_temperature: float = 0.2,
     openai_api_key: str = "",
     openai_base_url: str | None = None,
     chat_json: Callable[..., dict[str, str]] | None = None,
@@ -97,6 +99,7 @@ def process_subtitle_file(
             api_key=openai_api_key,
             base_url=openai_base_url,
             llm_model=(llm_model or "").strip() or "gpt-4o-mini",
+            llm_temperature=float(llm_temperature),
         )
 
     ctx = ProcessorContext(chat_json=chat_json)
@@ -133,6 +136,7 @@ def process_subtitle_file_multi(
     out_dir: str,
     options_by_processor: dict[str, dict] | None,
     llm_model: str = "gpt-4o-mini",
+    llm_temperature: float = 0.2,
     openai_api_key: str = "",
     openai_base_url: str | None = None,
     chat_json: Callable[..., dict[str, str]] | None = None,
@@ -149,6 +153,7 @@ def process_subtitle_file_multi(
             api_key=openai_api_key,
             base_url=openai_base_url,
             llm_model=(llm_model or "").strip() or "gpt-4o-mini",
+            llm_temperature=float(llm_temperature),
         )
 
     ctx = ProcessorContext(chat_json=chat_json)

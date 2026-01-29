@@ -112,6 +112,43 @@ def test_pipeline_default_chat_json_requires_api_key(tmp_path):
         )
 
 
+def test_pipeline_passes_llm_temperature_to_agent_loop(tmp_path, monkeypatch):
+    import auto_asr.subtitle_processing.pipeline as pipeline
+
+    captured: dict[str, float] = {}
+
+    def fake_agent_loop(
+        *,
+        chat_fn,
+        system_prompt: str,
+        payload: dict[str, str],
+        model: str,
+        temperature: float,
+        max_steps: int,
+    ):
+        captured["temperature"] = float(temperature)
+        return payload
+
+    monkeypatch.setattr(pipeline, "call_chat_json_agent_loop", fake_agent_loop)
+
+    p = tmp_path / "a.srt"
+    p.write_text("1\n00:00:00,000 --> 00:00:02,000\nab\n\n", encoding="utf-8")
+
+    process_subtitle_file(
+        str(p),
+        processor="optimize",
+        out_dir=str(tmp_path),
+        options={"batch_size": 10, "concurrency": 1},
+        llm_model="gpt-test",
+        llm_temperature=0.25,
+        openai_api_key="sk-test",
+        openai_base_url=None,
+        chat_json=None,
+    )
+
+    assert captured["temperature"] == 0.25
+
+
 def test_pipeline_non_subtitle_input_falls_back_to_srt_suffix(tmp_path):
     p = tmp_path / "a.txt"
     p.write_text("1\n00:00:00,000 --> 00:00:02,000\nab\n\n", encoding="utf-8")

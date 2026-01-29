@@ -64,6 +64,11 @@ DEFAULT_SUBTITLE_OPENAI_BASE_URL = _str(
 DEFAULT_SUBTITLE_LLM_MODEL = _str(
     _SAVED_CONFIG.get("subtitle_llm_model", _SAVED_CONFIG.get("llm_model", "gpt-4o-mini"))
 ).strip() or "gpt-4o-mini"
+try:
+    DEFAULT_SUBTITLE_LLM_TEMPERATURE = float(_SAVED_CONFIG.get("subtitle_llm_temperature", 0.2))
+except Exception:
+    DEFAULT_SUBTITLE_LLM_TEMPERATURE = 0.2
+DEFAULT_SUBTITLE_LLM_TEMPERATURE = max(0.0, min(2.0, DEFAULT_SUBTITLE_LLM_TEMPERATURE))
 DEFAULT_SUBTITLE_SPLIT_STRATEGY = (
     _str(_SAVED_CONFIG.get("subtitle_split_strategy", "semantic")).strip() or "semantic"
 )
@@ -247,6 +252,7 @@ def _save_subtitle_provider_settings_ui(
     subtitle_openai_api_key: str,
     subtitle_openai_base_url: str,
     subtitle_llm_model: str,
+    subtitle_llm_temperature: float,
     split_strategy: str,
 ):
     try:
@@ -255,6 +261,7 @@ def _save_subtitle_provider_settings_ui(
             openai_api_key=subtitle_openai_api_key,
             openai_base_url=subtitle_openai_base_url,
             llm_model=subtitle_llm_model,
+            llm_temperature=float(subtitle_llm_temperature),
             split_strategy=split_strategy,
         )
     except Exception as e:
@@ -469,6 +476,7 @@ def run_subtitle_processing(
     subtitle_openai_api_key: str,
     subtitle_openai_base_url: str,
     subtitle_llm_model: str,
+    subtitle_llm_temperature: float,
     target_language: str,
     split_strategy: str,
     split_mode: str,
@@ -495,6 +503,11 @@ def run_subtitle_processing(
 
     base_url = (subtitle_openai_base_url or "").strip() or None
     llm_model = (subtitle_llm_model or "").strip() or DEFAULT_SUBTITLE_LLM_MODEL
+    try:
+        llm_temperature = float(subtitle_llm_temperature)
+    except Exception:
+        llm_temperature = DEFAULT_SUBTITLE_LLM_TEMPERATURE
+    llm_temperature = max(0.0, min(2.0, llm_temperature))
 
     common = {"concurrency": int(concurrency)}
     options_by_processor: dict[str, dict] = {}
@@ -523,6 +536,7 @@ def run_subtitle_processing(
         openai_api_key=api_key,
         openai_base_url=subtitle_openai_base_url,
         llm_model=llm_model,
+        llm_temperature=llm_temperature,
         split_strategy=split_strategy,
     )
 
@@ -535,6 +549,7 @@ def run_subtitle_processing(
             out_dir=out_dir,
             options=options_by_processor.get(name, common),
             llm_model=llm_model,
+            llm_temperature=llm_temperature,
             openai_api_key=api_key,
             openai_base_url=base_url,
             chat_json=None,
@@ -546,6 +561,7 @@ def run_subtitle_processing(
             out_dir=out_dir,
             options_by_processor=options_by_processor,
             llm_model=llm_model,
+            llm_temperature=llm_temperature,
             openai_api_key=api_key,
             openai_base_url=base_url,
             chat_json=None,
@@ -662,6 +678,13 @@ with gr.Blocks(
                 subtitle_llm_model = gr.Textbox(
                     label="模型名",
                     value=DEFAULT_SUBTITLE_LLM_MODEL,
+                )
+                subtitle_llm_temperature = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=DEFAULT_SUBTITLE_LLM_TEMPERATURE,
+                    step=0.05,
+                    label="温度（越低越稳定，越高越发散）",
                 )
                 subtitle_llm_settings_state = gr.State(None)
 
@@ -935,6 +958,7 @@ with gr.Blocks(
             subtitle_openai_api_key,
             subtitle_openai_base_url,
             subtitle_llm_model,
+            subtitle_llm_temperature,
             split_strategy,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -947,6 +971,7 @@ with gr.Blocks(
             subtitle_openai_api_key,
             subtitle_openai_base_url,
             subtitle_llm_model,
+            subtitle_llm_temperature,
             split_strategy,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -959,6 +984,7 @@ with gr.Blocks(
             subtitle_openai_api_key,
             subtitle_openai_base_url,
             subtitle_llm_model,
+            subtitle_llm_temperature,
             split_strategy,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -971,6 +997,20 @@ with gr.Blocks(
             subtitle_openai_api_key,
             subtitle_openai_base_url,
             subtitle_llm_model,
+            subtitle_llm_temperature,
+            split_strategy,
+        ],
+        outputs=[subtitle_llm_settings_state],
+        queue=False,
+    )
+    subtitle_llm_temperature.change(
+        fn=_save_subtitle_provider_settings_ui,
+        inputs=[
+            subtitle_provider,
+            subtitle_openai_api_key,
+            subtitle_openai_base_url,
+            subtitle_llm_model,
+            subtitle_llm_temperature,
             split_strategy,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -983,6 +1023,7 @@ with gr.Blocks(
             subtitle_openai_api_key,
             subtitle_openai_base_url,
             subtitle_llm_model,
+            subtitle_llm_temperature,
             split_strategy,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -998,6 +1039,7 @@ with gr.Blocks(
             subtitle_openai_api_key,
             subtitle_openai_base_url,
             subtitle_llm_model,
+            subtitle_llm_temperature,
             target_language,
             split_strategy,
             split_mode,
