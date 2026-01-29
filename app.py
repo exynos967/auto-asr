@@ -98,7 +98,7 @@ DEFAULT_VAD_SPEECH_MERGE_GAP_MS = _clamp_int(
     _int(_SAVED_CONFIG.get("vad_speech_merge_gap_ms"), 100), 0, 2000
 )
 DEFAULT_API_CONCURRENCY = _clamp_int(_int(_SAVED_CONFIG.get("api_concurrency"), 4), 1, 16)
-CONFIG_NOTE = f"配置文件：`{_CONFIG_PATH}`（自动保存，明文保存 key，删除该文件即可重置）"
+CONFIG_NOTE = f"配置文件：`{_CONFIG_PATH}`"
 
 
 def _detect_cuda() -> tuple[bool, str]:
@@ -426,9 +426,8 @@ with gr.Blocks(
                 "# Auto-ASR",
                 "上传/录制音频 -> ASR -> 导出 SRT / VTT / TXT。",
                 "",
-                "- 若上游不返回 segments（无时间戳），可用「VAD 语音段」模式生成更准的字幕轴。",
+                "- 若上游不返回时间戳，可用「VAD 语音段」模式生成更准的字幕轴。",
                 "- VAD 语音段模式会增加调用次数（按语音段逐段转写）。",
-                "- 为了加速，语音段模式默认使用 WAV(PCM16) 上传；分段整段模式可选 MP3 压缩。",
                 "",
                 CONFIG_NOTE,
             ]
@@ -487,7 +486,7 @@ with gr.Blocks(
             stop_btn = gr.Button("停止转写", variant="stop")
 
             with gr.Row():
-                preview = gr.Textbox(label="字幕预览（前约 5000 字符）", lines=12)
+                preview = gr.Textbox(label="字幕预览", lines=12)
             with gr.Row():
                 full_text = gr.Textbox(label="完整文本", lines=12)
             with gr.Row():
@@ -564,7 +563,7 @@ with gr.Blocks(
                 with gr.Row():
                     funasr_enable_vad = gr.Checkbox(
                         value=DEFAULT_FUNASR_ENABLE_VAD,
-                        label="启用内置 VAD（推荐）",
+                        label="启用内置 VAD",
                     )
                     funasr_enable_punc = gr.Checkbox(
                         value=DEFAULT_FUNASR_ENABLE_PUNC,
@@ -622,7 +621,7 @@ with gr.Blocks(
                     label="语音段边缘填充（ms，避免切掉开头/结尾字）",
                 )
 
-            with gr.Accordion("字幕轴（上游无 segments 时）", open=True):
+            with gr.Accordion("字幕轴（模型不支持字幕轴时）", open=True):
                 timeline_strategy = gr.Dropdown(
                     choices=[
                         ("按 VAD 语音段（更准，调用更多）", "vad_speech"),
