@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from auto_asr.funasr_models import get_remote_code_candidates, resolve_model_dir
+from auto_asr.funasr_models import get_remote_code_candidates, is_funasr_nano, resolve_model_dir
 from auto_asr.openai_asr import ASRResult, ASRSegment
 
 logger = logging.getLogger(__name__)
@@ -596,6 +596,12 @@ def transcribe_file_funasr(
         "merge_vad": True,
         "merge_length_s": 15,
     }
+    if is_funasr_nano(cfg.model):
+        # Fun-ASR-Nano (LLM-based) currently does not support batch decoding. Force single-item
+        # batches to avoid `NotImplementedError: batch decoding is not implemented`.
+        gen_kwargs["batch_size_s"] = 1
+        gen_kwargs["batch_size"] = 1
+        logger.info("FunASR-Nano: disable batch decoding: batch_size_s=1, batch_size=1")
     try:
         res = model_obj.generate(**_filter_kwargs(model_obj.generate, gen_kwargs))
     except Exception as e:
