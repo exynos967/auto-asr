@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import math
+import re
+from concurrent.futures import ThreadPoolExecutor
+
+from auto_asr.subtitle_processing.base import ProcessorContext, SubtitleProcessor, register_processor
 
 from auto_asr.subtitles import SubtitleLine
 
@@ -53,5 +57,75 @@ def split_line_to_cues(line: SubtitleLine, parts: list[str]) -> list[SubtitleLin
     return out
 
 
-__all__ = ["split_line_to_cues", "split_text_by_delimiter"]
+def _merge_parts_like_original(original: str, parts: list[str]) -> str:
+    if re.search(r"\s", original or ""):
+        return " ".join(parts)
+    return "".join(parts)
 
+
+@register_processor
+class SplitProcessor(SubtitleProcessor):
+    name = "split"
+
+    def process(
+        self, lines: list[SubtitleLine], *, ctx: ProcessorContext, options: dict
+    ) -> list[SubtitleLine]:
+        mode = str(options.get("mode") or "").strip() or "inplace_newlines"
+        if mode not in {"inplace_newlines", "split_to_cues"}:
+            mode = "inplace_newlines"
+
+        delimiter = str(options.get("delimiter") or "").strip() or "<br>"
+        concurrency = int(options.get("concurrency") or 4)
+        concurrency = max(1, min(32, concurrency))
+
+        system_prompt = (
+            "You are a subtitle sentence splitter.\n"
+            f"Insert `{delimiter}` into the text to split it into shorter semantic chunks.\n"
+            "Keep the original text unchanged except inserting the delimiter.\n"
+            "Return ONLY a valid JSON dictionary mapping the SAME keys to the processed text.\n"
+            "Do not add or remove keys.\n"
+        )
+
+        indexed = [(str(i), line) for i, line in enumerate(lines, 1)]
+
+        def split_one(key: str, line: SubtitleLine) -> tuple[str, list[str]]:
+            payload = {key: line.text}
+            out = ctx.chat_json(system_prompt=system_prompt, payload=payload)
+            candidate = str(out.get(key, line.text) or line.text)
+            parts = split_text_by_delimiter(candidate, delimiter=delimiter)
+            if not parts:
+                return key, [line.text]
+
+            merged = _merge_parts_like_original(line.text, parts)
+            orig_norm = re.sub(r"\s+", " ", line.text).strip()
+            merged_norm = re.sub(r"\s+", " ", merged).strip()
+            if orig_norm and merged_norm and orig_norm != merged_norm:
+                # Content changed; fallback to original.
+                return key, [line.text]
+
+            return key, parts
+
+        parts_map: dict[str, list[str]] = {}
+        with ThreadPoolExecutor(max_workers=concurrency) as ex:
+            futs = [ex.submit(split_one, k, line) for k, line in indexed]
+            for fut, (k, line) in zip(futs, indexed, strict=False):
+                try:
+                    key, parts = fut.result()
+                except Exception:
+                    key, parts = k, [line.text]
+                parts_map[key] = parts
+
+        out_lines: list[SubtitleLine] = []
+        for i, line in enumerate(lines, 1):
+            parts = parts_map.get(str(i), [line.text])
+            if mode == "split_to_cues" and len(parts) > 1:
+                out_lines.extend(split_line_to_cues(line, parts))
+                continue
+
+            merged = "\n".join(p.strip() for p in parts if p.strip())
+            out_lines.append(SubtitleLine(start_s=line.start_s, end_s=line.end_s, text=merged))
+
+        return out_lines
+
+
+__all__ = ["SplitProcessor", "split_line_to_cues", "split_text_by_delimiter"]
