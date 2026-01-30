@@ -16,6 +16,7 @@ from auto_asr.funasr_asr import release_funasr_resources, transcribe_file_funasr
 from auto_asr.funasr_models import is_funasr_nano
 from auto_asr.openai_asr import make_openai_client, transcribe_file_verbose
 from auto_asr.qwen3_asr import Qwen3ASRConfig, release_qwen3_resources, transcribe_chunks_qwen3
+from auto_asr.silence_split import load_and_split_silence
 from auto_asr.subtitles import SubtitleLine, compose_srt, compose_txt, compose_vtt
 from auto_asr.vad_split import (
     WAV_SAMPLE_RATE,
@@ -421,23 +422,18 @@ def transcribe_to_subtitles(
         try:
             return_time_stamps = output_format in {"srt", "vtt"}
 
-            # Forced aligner supports up to ~5 minutes. For long audio, we force chunking to keep
-            # each chunk within a safe window. We still prefer model timestamps within each chunk.
+            # Forced aligner supports up to ~5 minutes. For long audio, we chunk audio to keep each
+            # chunk within a safe window. For qwen3asr we prefer silence-based chunking (GPT-SoVITS
+            # style) instead of Silero VAD (more stable + easier to reason about).
             max_align_chunk_s = 300
-            force_split = return_time_stamps and vad_max_segment_threshold_s > max_align_chunk_s
+            max_chunk_s = min(int(vad_max_segment_threshold_s), max_align_chunk_s)
 
-            chunks, used_vad = load_and_split(
+            chunks, used_split = load_and_split_silence(
                 file_path=input_audio_path,
-                enable_vad=bool(enable_vad) or force_split,
-                vad_segment_threshold_s=int(vad_segment_threshold_s),
-                vad_max_segment_threshold_s=min(int(vad_max_segment_threshold_s), max_align_chunk_s)
-                if force_split
-                else int(vad_max_segment_threshold_s),
-                vad_threshold=float(vad_threshold),
-                vad_min_speech_duration_ms=int(vad_min_speech_duration_ms),
-                vad_min_silence_duration_ms=int(vad_min_silence_duration_ms),
-                vad_speech_pad_ms=int(vad_speech_pad_ms),
-                vad_min_duration_s=0 if force_split else 180,
+                max_segment_s=max_chunk_s,
+                # Best-effort: reuse existing "VAD" UI knobs for silence slicer behavior.
+                min_interval_ms=int(vad_min_silence_duration_ms),
+                max_sil_kept_ms=int(vad_speech_pad_ms),
             )
 
             cfg = Qwen3ASRConfig(
@@ -507,7 +503,7 @@ def transcribe_to_subtitles(
             debug = (
                 f"backend=qwen3asr, model={cfg.model}, forced_aligner={cfg.forced_aligner}, "
                 f"device={cfg.device}, chunks={len(chunks)}, segments={total_segments}, "
-                f"vad={'on' if enable_vad else 'off'}(used={used_vad})"
+                f"split=silence(used={used_split}), max_chunk_s={max_chunk_s}"
             )
             logger.info(
                 "转写完成(qwen3asr): out=%s, chunks=%d, segments=%d",

@@ -60,11 +60,11 @@ uv python install 3.11
 uv sync --extra funasr -p 3.11
 ```
 
-如需使用 NVIDIA 显卡（CUDA）加速本地推理，可额外安装 CUDA 版 PyTorch（示例：CUDA 12.1；按你的驱动/CUDA 版本选择对应的 cuXXX）：
+如需使用 NVIDIA 显卡（CUDA）加速本地推理，可额外安装 CUDA 版 PyTorch（示例：CUDA 12.8；按你的驱动/CUDA 版本选择对应的 cuXXX）：
 
 ```bash
-# 推荐：用 uv 的 PyTorch 后端选择（避免手动拼 index-url）
-uv pip install --upgrade --torch-backend cu121 torch torchaudio
+# 推荐：用 uv 的 PyTorch 后端选择、
+uv pip install --upgrade --torch-backend cu128 torch torchaudio
 ```
 
 如果你使用 `cu130` 这类 index-url 发现 “没有更改包”，通常是因为 PyTorch/uv 当前并没有对应的 cu130 轮子（即使你本机安装了 CUDA 13.0 Toolkit，也不代表有 cu130 的 torch 轮子），或你已安装了同版本的 torch/torchaudio。

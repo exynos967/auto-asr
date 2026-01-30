@@ -10,7 +10,10 @@ def test_transcribe_to_subtitles_qwen3_backend_uses_model_timestamps(tmp_path, m
 
     wav = np.zeros(16000, dtype=np.float32)
 
-    def fake_load_and_split(**_kwargs):
+    def should_not_call_load_and_split(**_kwargs):
+        raise AssertionError("qwen3asr should use silence splitting, not VAD splitting")
+
+    def fake_load_and_split_silence(**_kwargs):
         return [AudioChunk(start_sample=0, end_sample=16000, wav=wav)], False
 
     def fake_transcribe_chunks_qwen3(**_kwargs):
@@ -25,7 +28,13 @@ def test_transcribe_to_subtitles_qwen3_backend_uses_model_timestamps(tmp_path, m
             )
         ]
 
-    monkeypatch.setattr(pipeline, "load_and_split", fake_load_and_split)
+    monkeypatch.setattr(pipeline, "load_and_split", should_not_call_load_and_split)
+    monkeypatch.setattr(
+        pipeline,
+        "load_and_split_silence",
+        fake_load_and_split_silence,
+        raising=False,
+    )
     monkeypatch.setattr(pipeline, "transcribe_chunks_qwen3", fake_transcribe_chunks_qwen3)
 
     res = pipeline.transcribe_to_subtitles(
