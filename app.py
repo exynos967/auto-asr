@@ -1031,15 +1031,6 @@ with gr.Blocks(
             with gr.Accordion("Qwen3-ASR 本地推理", open=False):
                 gr.Markdown("首次使用需安装：`uv sync --extra transformers`")
                 gr.Markdown(f"模型下载目录（项目内）：`{get_models_dir()}`")
-                gr.Markdown(
-                    "\n".join(
-                        [
-                            "模型地址（HuggingFace）：",
-                            f"- {QWEN3_ASR_HF_URL}",
-                            f"- {QWEN3_FORCED_ALIGNER_HF_URL}",
-                        ]
-                    )
-                )
                 qwen3_model = gr.Dropdown(
                     choices=[
                         ("Qwen3-ASR-1.7B（Qwen/Qwen3-ASR-1.7B）", "Qwen/Qwen3-ASR-1.7B"),
