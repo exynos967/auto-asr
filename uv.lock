@@ -176,6 +176,7 @@ dependencies = [
     { name = "openai" },
     { name = "silero-vad" },
     { name = "soundfile" },
+    { name = "typer" },
 ]
 
 [package.optional-dependencies]
@@ -219,6 +220,7 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'funasr'" },
     { name = "transformers", marker = "extra == 'funasr'" },
     { name = "transformers", marker = "extra == 'transformers'" },
+    { name = "typer" },
 ]
 provides-extras = ["funasr", "transformers"]
 
