@@ -166,3 +166,114 @@ def test_pipeline_non_subtitle_input_falls_back_to_srt_suffix(tmp_path):
         chat_json=chat_json,
     )
     assert res.out_path.endswith(".srt")
+
+
+def test_subtitle_openai_chat_json_retries_on_429_with_progressive_sleep_and_reset(monkeypatch):
+    import auto_asr.subtitle_processing.pipeline as pipeline
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(pipeline.time, "sleep", lambda s: sleeps.append(float(s)))
+
+    class DummyHTTPError(RuntimeError):
+        def __init__(self, status_code: int):
+            super().__init__(f"http {status_code}")
+            self.status_code = status_code
+
+    class DummyOpenAI:
+        def __init__(self, *args, **kwargs):
+            self._actions = [
+                429,
+                429,
+                '{"0":"ok"}',
+                429,
+                '{"0":"ok"}',
+            ]
+
+            class _Chat:
+                def __init__(self, parent):
+                    self.completions = _Completions(parent)
+
+            class _Completions:
+                def __init__(self, parent):
+                    self._parent = parent
+
+                def create(self, **_kwargs):
+                    action = self._parent._actions.pop(0)
+                    if isinstance(action, int):
+                        raise DummyHTTPError(action)
+
+                    class _Msg:
+                        def __init__(self, content: str):
+                            self.content = content
+
+                    class _Choice:
+                        def __init__(self, content: str):
+                            self.message = _Msg(content)
+
+                    class _Resp:
+                        def __init__(self, content: str):
+                            self.choices = [_Choice(content)]
+
+                    return _Resp(action)
+
+            self.chat = _Chat(self)
+
+    monkeypatch.setattr(pipeline, "OpenAI", DummyOpenAI)
+
+    chat_json = pipeline._make_openai_chat_json(
+        api_key="sk-test",
+        base_url=None,
+        llm_model="gpt-test",
+        llm_temperature=0.2,
+    )
+
+    out1 = chat_json(system_prompt="x", payload={"0": "ok"}, max_steps=1)
+    assert out1 == {"0": "ok"}
+
+    out2 = chat_json(system_prompt="x", payload={"0": "ok"}, max_steps=1)
+    assert out2 == {"0": "ok"}
+
+    # 429 backoff: 2s -> 4s, then reset to 2s after a successful request
+    assert sleeps == [2.0, 4.0, 2.0]
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_subtitle_openai_chat_json_401_403_error_no_retry(monkeypatch, status_code):
+    import auto_asr.subtitle_processing.pipeline as pipeline
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(pipeline.time, "sleep", lambda s: sleeps.append(float(s)))
+
+    class DummyHTTPError(RuntimeError):
+        def __init__(self, status_code: int):
+            super().__init__(f"http {status_code}")
+            self.status_code = status_code
+
+    class DummyOpenAI:
+        def __init__(self, *args, **kwargs):
+            class _Chat:
+                def __init__(self, parent):
+                    self.completions = _Completions(parent)
+
+            class _Completions:
+                def __init__(self, parent):
+                    self._parent = parent
+
+                def create(self, **_kwargs):
+                    raise DummyHTTPError(status_code)
+
+            self.chat = _Chat(self)
+
+    monkeypatch.setattr(pipeline, "OpenAI", DummyOpenAI)
+
+    chat_json = pipeline._make_openai_chat_json(
+        api_key="sk-test",
+        base_url=None,
+        llm_model="gpt-test",
+        llm_temperature=0.2,
+    )
+
+    with pytest.raises(RuntimeError):
+        chat_json(system_prompt="x", payload={"0": "ok"}, max_steps=1)
+
+    assert sleeps == []

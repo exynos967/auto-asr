@@ -92,12 +92,14 @@ def _resolve_dtype(device: str):
     return torch.float32
 
 
-def download_qwen3_models(*, model: str, forced_aligner: str) -> tuple[str, str]:
-    """Download Qwen3-ASR + forced aligner models to the project ./models cache."""
+def download_qwen3_models(*, model: str, forced_aligner: str = "") -> tuple[str, str]:
+    """Download Qwen3-ASR model (and optional forced aligner) to the project ./models cache."""
     configure_model_cache_env()
     asr_dir = snapshot_download(model)
-    fa_dir = snapshot_download(forced_aligner)
-    return str(asr_dir), str(fa_dir)
+    fa_dir = ""
+    if (forced_aligner or "").strip():
+        fa_dir = str(snapshot_download(forced_aligner))
+    return str(asr_dir), fa_dir
 
 
 def _make_model(cfg: Qwen3ASRConfig) -> Any:
@@ -122,20 +124,22 @@ def _make_model(cfg: Qwen3ASRConfig) -> Any:
     logger.info(
         "加载 Qwen3-ASR 模型: model=%s, forced_aligner=%s, device=%s, dtype=%s",
         cfg.model,
-        cfg.forced_aligner,
+        cfg.forced_aligner or "(disabled)",
         device_map,
         getattr(dtype, "__name__", str(dtype)),
     )
 
-    model = Qwen3ASRModel.from_pretrained(
-        cfg.model,
-        dtype=dtype,
-        device_map=device_map,
-        forced_aligner=cfg.forced_aligner,
-        forced_aligner_kwargs=dict(dtype=dtype, device_map=device_map),
-        max_inference_batch_size=int(cfg.max_inference_batch_size),
-        max_new_tokens=int(cfg.max_new_tokens),
-    )
+    kwargs = {
+        "dtype": dtype,
+        "device_map": device_map,
+        "max_inference_batch_size": int(cfg.max_inference_batch_size),
+        "max_new_tokens": int(cfg.max_new_tokens),
+    }
+    if (cfg.forced_aligner or "").strip():
+        kwargs["forced_aligner"] = cfg.forced_aligner
+        kwargs["forced_aligner_kwargs"] = dict(dtype=dtype, device_map=device_map)
+
+    model = Qwen3ASRModel.from_pretrained(cfg.model, **kwargs)
 
     _MODEL_CACHE[key] = model
     return model

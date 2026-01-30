@@ -19,6 +19,7 @@ def test_app_load_qwen3_model_ui_builds_config(monkeypatch):
         "Qwen/Qwen3-ForcedAligner-0.6B",
         "cpu",
         4,
+        True,
     )
     assert "已加载 Qwen3-ASR 模型" in msg
     assert seen["cfg"].model == "Qwen/Qwen3-ASR-1.7B"
@@ -82,6 +83,7 @@ def test_app_run_asr_passes_qwen3_options(monkeypatch):
         "Qwen/Qwen3-ForcedAligner-0.6B",
         "cpu",
         4,
+        True,
     )
     assert out[0] == "p"
     assert captured["call_kwargs"]["asr_backend"] == "qwen3asr"
@@ -89,7 +91,9 @@ def test_app_run_asr_passes_qwen3_options(monkeypatch):
     assert captured["call_kwargs"]["qwen3_forced_aligner"] == "Qwen/Qwen3-ForcedAligner-0.6B"
     assert captured["call_kwargs"]["qwen3_device"] == "cpu"
     assert captured["call_kwargs"]["qwen3_max_inference_batch_size"] == 4
+    assert captured["call_kwargs"]["qwen3_use_forced_aligner"] is True
 
     assert captured["saved_config"]["asr_backend"] == "qwen3asr"
     assert captured["saved_config"]["qwen3_model"] == "Qwen/Qwen3-ASR-1.7B"
     assert captured["saved_config"]["qwen3_max_inference_batch_size"] == 4
+    assert captured["saved_config"]["qwen3_use_forced_aligner"] is True

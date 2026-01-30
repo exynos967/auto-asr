@@ -88,6 +88,7 @@ def transcribe_to_subtitles(
     qwen3_forced_aligner: str = "Qwen/Qwen3-ForcedAligner-0.6B",
     qwen3_device: str = "auto",
     qwen3_max_inference_batch_size: int = 8,
+    qwen3_use_forced_aligner: bool = True,
     enable_vad: bool = True,
     vad_segment_threshold_s: int = 120,
     vad_max_segment_threshold_s: int = 180,
@@ -420,7 +421,9 @@ def transcribe_to_subtitles(
 
     if asr_backend == "qwen3asr":
         try:
-            return_time_stamps = output_format in {"srt", "vtt"}
+            return_time_stamps = (
+                output_format in {"srt", "vtt"} and bool(qwen3_use_forced_aligner)
+            )
 
             # Forced aligner supports up to ~5 minutes. For long audio, we chunk audio to keep each
             # chunk within a safe window. For qwen3asr we prefer silence-based chunking (GPT-SoVITS
@@ -438,8 +441,11 @@ def transcribe_to_subtitles(
 
             cfg = Qwen3ASRConfig(
                 model=(qwen3_model or "").strip() or "Qwen/Qwen3-ASR-1.7B",
-                forced_aligner=(qwen3_forced_aligner or "").strip()
-                or "Qwen/Qwen3-ForcedAligner-0.6B",
+                forced_aligner=(
+                    (qwen3_forced_aligner or "").strip() or "Qwen/Qwen3-ForcedAligner-0.6B"
+                )
+                if return_time_stamps
+                else "",
                 device=(qwen3_device or "").strip() or "auto",
                 max_inference_batch_size=max(1, int(qwen3_max_inference_batch_size)),
             )

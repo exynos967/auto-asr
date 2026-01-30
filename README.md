@@ -27,7 +27,9 @@ Qwen3-ASR 本地模型（HuggingFace）：
 - Qwen3-ForcedAligner-0.6B: `https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B`
 
 WebUI 使用时需要同时配置 ASR 模型和 Forced Aligner（用于生成时间戳）；在「引擎配置 -> Qwen3-ASR」点击「下载模型/加载模型」即可。
-输出 `srt/vtt` 时会优先使用模型返回的时间戳；为兼容 Forced Aligner 的时长限制，长音频会被自动切分（单段最多约 300s）。
+若在「引擎配置 -> Qwen3-ASR」勾选「输出字幕轴（使用 Forced Aligner）」，输出 `srt/vtt` 时会优先使用模型返回的时间戳（更细）。
+未勾选时不会加载/调用 Forced Aligner，`srt/vtt` 会按切分段落生成**较粗的时间轴**。
+为兼容 Forced Aligner 的时长限制（以及避免长音频推理显存压力），长音频会被自动切分（单段最多约 300s）。
 
 如需使用「FunASR（本地推理）」：
 
@@ -44,14 +46,13 @@ FunASR 本地模型（HuggingFace）：
 
 模型存放位置：
 
-- 在 WebUI 的「引擎配置 -> FunASR」点击「下载模型」会将模型下载到项目根目录的 `./models/`（已加入 `.gitignore`）。
 - 目录结构取决于底层下载器：
   - ModelScope 通常在 `./models/hub/models/<组织>/<模型名>/...`
   - HuggingFace 通常在 `./models/huggingface/hub/...`
 - `FunAudioLLM/Fun-ASR-Nano-2512` 还会自动下载依赖模型 `Qwen/Qwen3-0.6B`，并放置/链接到
   `<Fun-ASR-Nano-2512>/Qwen3-0.6B`（体积较大，首次下载较慢）。
 
-Windows + Python 3.12 可能会遇到 `llvmlite/numba` 依赖不兼容导致安装失败（例如报错 *Cannot install on Python version 3.12*）。
+Windows + Python 3.12 可能会遇到 `llvmlite/numba` 依赖不兼容导致安装失败
 建议改用 Python 3.11（或 3.10）创建环境后再安装（本项目已将 `numpy` 约束到 `numpy<2.2`，以避免 `numba` 选择到不兼容版本）：
 
 ```bash

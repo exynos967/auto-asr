@@ -128,7 +128,9 @@ class SplitProcessor(SubtitleProcessor):
                 k, line = indexed[idx]
                 try:
                     key, parts = fut.result()
-                except Exception:
+                except Exception as e:
+                    if getattr(e, "status_code", None) in {401, 403}:
+                        raise
                     key, parts = k, [line.text]
                 parts_map[key] = parts
 

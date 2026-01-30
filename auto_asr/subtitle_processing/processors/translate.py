@@ -60,6 +60,8 @@ class TranslateProcessor(SubtitleProcessor):
                 try:
                     results.update({str(k): str(v) for k, v in fut.result().items()})
                 except Exception as e:
+                    if getattr(e, "status_code", None) in {401, 403}:
+                        raise
                     logger.exception("translate batch failed, fallback to original: %s", e)
                     results.update(batch)
 

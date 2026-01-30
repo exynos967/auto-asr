@@ -69,3 +69,35 @@ def test_transcribe_chunks_qwen3_builds_segments_from_time_stamps(monkeypatch):
         ASRSegment(start_s=0.5, end_s=1.0, text="world"),
     ]
 
+
+def test_preload_qwen3_model_can_disable_forced_aligner(monkeypatch):
+    import auto_asr.qwen3_asr as qwen3_asr
+
+    qwen3_asr._MODEL_CACHE.clear()
+
+    seen = {}
+
+    class FakeQwen3ASRModel:
+        @classmethod
+        def from_pretrained(cls, model, **kwargs):  # type: ignore[no-untyped-def]
+            seen["model"] = model
+            seen["kwargs"] = dict(kwargs)
+            return object()
+
+    monkeypatch.setattr(qwen3_asr, "_import_qwen_asr", lambda: FakeQwen3ASRModel)
+    monkeypatch.setattr(qwen3_asr, "configure_model_cache_env", lambda: None)
+
+    qwen3_asr.preload_qwen3_model(
+        qwen3_asr.Qwen3ASRConfig(
+            model="Qwen/Qwen3-ASR-1.7B",
+            forced_aligner="",
+            device="cpu",
+            max_inference_batch_size=1,
+        )
+    )
+
+    assert seen["model"] == "Qwen/Qwen3-ASR-1.7B"
+    assert "forced_aligner" not in seen["kwargs"]
+    assert "forced_aligner_kwargs" not in seen["kwargs"]
+
+    qwen3_asr._MODEL_CACHE.clear()

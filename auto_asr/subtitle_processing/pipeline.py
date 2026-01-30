@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 
 from openai import OpenAI
 
@@ -49,13 +50,58 @@ def _make_openai_chat_json(
         else OpenAI(api_key=api_key)
     )
 
+    # Basic progressive backoff for rate limits:
+    # - On 429: sleep 2s -> 4s -> 8s -> ... up to 10s
+    # - On any successful request: reset backoff to 2s
+    # - On 401/403: fail fast
+    backoff_lock = Lock()
+    backoff_s = 2.0
+
+    def _status_code(err: BaseException) -> int | None:
+        code = getattr(err, "status_code", None)
+        if isinstance(code, int):
+            return code
+        resp = getattr(err, "response", None)
+        if resp is not None:
+            code = getattr(resp, "status_code", None)
+            if isinstance(code, int):
+                return code
+        return None
+
     def chat_fn(messages, *, model: str, temperature: float):
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,  # pyright: ignore[reportArgumentType]
-            temperature=temperature,
-        )
-        return resp.choices[0].message.content or ""
+        nonlocal backoff_s
+
+        while True:
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,  # pyright: ignore[reportArgumentType]
+                    temperature=temperature,
+                )
+
+                with backoff_lock:
+                    backoff_s = 2.0
+
+                return resp.choices[0].message.content or ""
+            except Exception as e:
+                code = _status_code(e)
+                if code in {401, 403}:
+                    err = RuntimeError(f"LLM 提供商鉴权失败（HTTP {code}）。")
+                    try:
+                        setattr(err, "status_code", int(code))
+                    except Exception:
+                        pass
+                    raise err from e
+                if code == 429:
+                    with backoff_lock:
+                        delay_s = max(0.0, min(10.0, float(backoff_s)))
+                        backoff_s = min(backoff_s * 2.0, 10.0)
+                    logger.warning(
+                        "LLM 请求触发限流(HTTP 429)，将暂停 %.1fs 后重试（最大 10s）。", delay_s
+                    )
+                    time.sleep(delay_s)
+                    continue
+                raise
 
     def chat_json(*, system_prompt: str, payload: dict[str, str], **kwargs) -> dict[str, str]:
         temperature = float(kwargs.get("temperature", llm_temperature))
