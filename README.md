@@ -1,6 +1,6 @@
-# auto-asr (Gradio + OpenAI / FunASR)
+# auto-asr (Gradio + OpenAI / FunASR / Qwen3-ASR)
 
-Upload/record audio in a Gradio UI, transcribe via OpenAI API or local FunASR, and download subtitles as `srt` / `vtt` / `txt`.
+Upload/record audio in a Gradio UI, transcribe via OpenAI API or local FunASR/Qwen3-ASR, and download subtitles as `srt` / `vtt` / `txt`.
 
 Long-audio splitting logic is adapted from Qwen3-ASR-Toolkit (MIT License).
 See `THIRD_PARTY_NOTICES.md`.
@@ -14,6 +14,20 @@ uv sync
 
 启动后在页面的「OpenAI 配置」里填写 `OpenAI API Key`（以及可选的 `Base URL`）。
 配置会在每次点击「开始转写」时自动保存到项目根目录的 `.auto_asr_config.json`（明文保存 key，已加入 `.gitignore`）。如需重置配置，删除该文件即可。
+
+如需使用「Qwen3-ASR（本地推理）」：
+
+```bash
+uv sync --extra qwen3asr
+```
+
+Qwen3-ASR 本地模型（HuggingFace）：
+
+- Qwen3-ASR-1.7B: `https://huggingface.co/Qwen/Qwen3-ASR-1.7B`
+- Qwen3-ForcedAligner-0.6B: `https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B`
+
+WebUI 使用时需要同时配置 ASR 模型和 Forced Aligner（用于生成时间戳）；在「引擎配置 -> Qwen3-ASR」点击「下载模型/加载模型」即可。
+输出 `srt/vtt` 时会优先使用模型返回的时间戳；为兼容 Forced Aligner 的时长限制，长音频会被自动切分（单段最多约 300s）。
 
 如需使用「FunASR（本地推理）」：
 
@@ -73,8 +87,9 @@ Then open the printed local URL.
 WebUI 使用提示：
 
 - 选择「FunASR（本地推理）」时，可在「引擎配置 -> FunASR」点击「加载模型」预加载到显存/内存，减少首次转写等待。
+- 选择「Qwen3-ASR（本地推理）」时，可在「引擎配置 -> Qwen3-ASR」点击「加载模型」预加载到显存/内存，减少首次转写等待。
 - 转写过程中可点击「停止转写」发送停止信号（后台会尽快停止，已发出的请求可能仍需等待返回）。
-- 「字幕处理」Tab：可上传 `.srt/.vtt` 做字幕校正/翻译/分割；使用「引擎配置 -> OpenAI 配置」中的 `LLM 模型名（字幕处理）`。
+- 「字幕处理」Tab：可上传 `.srt/.vtt` 做字幕校正/翻译/分割；在该 Tab 的「LLM 提供商（仅字幕处理）」中配置 API Key/Base URL/模型即可。
   - 输出文件默认写入 `./outputs/processed/`。
 
 ## Notes

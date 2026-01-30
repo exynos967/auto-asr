@@ -24,6 +24,15 @@ funasr = [
     # SenseVoice/FunASR-Nano tokenizers may require `tiktoken`.
     "tiktoken",
 ]
+qwen3asr = [
+    "qwen-asr",
+    # Used by our model downloader (ModelScope preferred, HF fallback).
+    "modelscope",
+    "huggingface_hub",
+    # Tokenizers / transformers backend.
+    "transformers",
+    "sentencepiece",
+]
 
 [dependency-groups]
 dev = ["ruff", "pytest"]

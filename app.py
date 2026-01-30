@@ -14,6 +14,12 @@ from auto_asr.funasr_asr import (
 )
 from auto_asr.model_hub import get_models_dir
 from auto_asr.pipeline import transcribe_to_subtitles
+from auto_asr.qwen3_asr import (
+    Qwen3ASRConfig,
+    download_qwen3_models,
+    preload_qwen3_model,
+    release_qwen3_resources,
+)
 from auto_asr.subtitle_processing.pipeline import (
     process_subtitle_file,
     process_subtitle_file_multi,
@@ -51,9 +57,9 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
 DEFAULT_OPENAI_API_KEY = _str(_SAVED_CONFIG.get("openai_api_key")).strip()
 DEFAULT_OPENAI_BASE_URL = _str(_SAVED_CONFIG.get("openai_base_url")).strip()
 DEFAULT_MODEL = _str(_SAVED_CONFIG.get("model", "whisper-1")).strip() or "whisper-1"
-DEFAULT_ASR_BACKEND = _str(_SAVED_CONFIG.get("asr_backend", "openai")).strip() or "openai"
-if DEFAULT_ASR_BACKEND not in {"openai", "funasr"}:
-    DEFAULT_ASR_BACKEND = "openai"
+DEFAULT_ASR_BACKEND = _str(_SAVED_CONFIG.get("asr_backend", "qwen3asr")).strip() or "qwen3asr"
+if DEFAULT_ASR_BACKEND not in {"openai", "funasr", "qwen3asr"}:
+    DEFAULT_ASR_BACKEND = "qwen3asr"
 
 DEFAULT_SUBTITLE_PROVIDER = (
     _str(_SAVED_CONFIG.get("subtitle_provider", "openai")).strip() or "openai"
@@ -108,6 +114,14 @@ DEFAULT_FUNASR_LANGUAGE = _str(_SAVED_CONFIG.get("funasr_language", "auto")).str
 DEFAULT_FUNASR_USE_ITN = bool(_SAVED_CONFIG.get("funasr_use_itn", True))
 DEFAULT_FUNASR_ENABLE_VAD = bool(_SAVED_CONFIG.get("funasr_enable_vad", False))
 DEFAULT_FUNASR_ENABLE_PUNC = bool(_SAVED_CONFIG.get("funasr_enable_punc", True))
+
+DEFAULT_QWEN3_MODEL = _str(_SAVED_CONFIG.get("qwen3_model", "Qwen/Qwen3-ASR-1.7B")).strip()
+DEFAULT_QWEN3_FORCED_ALIGNER = _str(
+    _SAVED_CONFIG.get("qwen3_forced_aligner", "Qwen/Qwen3-ForcedAligner-0.6B")
+).strip()
+DEFAULT_QWEN3_DEVICE = _str(_SAVED_CONFIG.get("qwen3_device", "auto")).strip() or "auto"
+if DEFAULT_QWEN3_DEVICE not in {"auto", "cpu", "cuda:0"}:
+    DEFAULT_QWEN3_DEVICE = "auto"
 DEFAULT_OUTPUT_FORMAT = _str(_SAVED_CONFIG.get("output_format", "srt")).strip() or "srt"
 if DEFAULT_OUTPUT_FORMAT not in {"srt", "vtt", "txt"}:
     DEFAULT_OUTPUT_FORMAT = "srt"
@@ -224,6 +238,13 @@ def _resolve_funasr_device_ui(device: str) -> str:
     return d
 
 
+def _resolve_qwen3_device_ui(device: str) -> str:
+    d = (device or "").strip()
+    if d in {"", "auto"}:
+        return "cuda:0" if CUDA_AVAILABLE else "cpu"
+    return d
+
+
 def load_funasr_model_ui(
     funasr_model: str,
     funasr_device: str,
@@ -263,13 +284,62 @@ def download_funasr_model_ui(
     return f"下载完成：模型文件已下载到项目目录 `{get_models_dir()}`。"
 
 
+def load_qwen3_model_ui(
+    qwen3_model: str,
+    qwen3_forced_aligner: str,
+    qwen3_device: str,
+) -> str:
+    resolved_device = _resolve_qwen3_device_ui(qwen3_device)
+    try:
+        preload_qwen3_model(
+            cfg=Qwen3ASRConfig(
+                model=(qwen3_model or "").strip() or "Qwen/Qwen3-ASR-1.7B",
+                forced_aligner=(qwen3_forced_aligner or "").strip()
+                or "Qwen/Qwen3-ForcedAligner-0.6B",
+                device=resolved_device,
+            )
+        )
+    except Exception as e:
+        logger.exception(
+            "加载 Qwen3-ASR 模型失败: model=%s, aligner=%s, device=%s",
+            qwen3_model,
+            qwen3_forced_aligner,
+            resolved_device,
+        )
+        return f"加载失败：{e}"
+
+    return (
+        "已加载 Qwen3-ASR 模型："
+        f"{(qwen3_model or '').strip()} + {(qwen3_forced_aligner or '').strip()}"
+        f"（device={resolved_device}）"
+    )
+
+
+def download_qwen3_models_ui(
+    qwen3_model: str,
+    qwen3_forced_aligner: str,
+) -> str:
+    try:
+        download_qwen3_models(
+            model=(qwen3_model or "").strip() or "Qwen/Qwen3-ASR-1.7B",
+            forced_aligner=(qwen3_forced_aligner or "").strip()
+            or "Qwen/Qwen3-ForcedAligner-0.6B",
+        )
+    except Exception as e:
+        logger.exception("下载 Qwen3-ASR 模型失败: model=%s", qwen3_model)
+        return f"下载失败：{e}"
+
+    return f"下载完成：模型文件已下载到项目目录 `{get_models_dir()}`。"
+
+
 def release_cuda_ui() -> str:
     try:
         release_funasr_resources()
+        release_qwen3_resources()
     except Exception as e:
         logger.exception("释放显存失败")
         return f"释放失败：{e}"
-    return "已释放 FunASR 模型缓存/显存（如仍显示占用，通常是 PyTorch 缓存行为）。"
+    return "已释放 FunASR/Qwen3 模型缓存/显存（如仍显示占用，通常是 PyTorch 缓存行为）。"
 
 
 def _save_subtitle_provider_settings_ui(
@@ -330,6 +400,9 @@ def _auto_save_settings(
     funasr_use_itn: bool,
     funasr_enable_vad: bool,
     funasr_enable_punc: bool,
+    qwen3_model: str,
+    qwen3_forced_aligner: str,
+    qwen3_device: str,
     output_format: str,
     language: str,
     enable_vad: bool,
@@ -364,6 +437,10 @@ def _auto_save_settings(
         "openai_api_key": api_key,
         "openai_base_url": (openai_base_url or "").strip(),
         "output_format": (output_format or "").strip() or "srt",
+        "qwen3_device": (qwen3_device or "").strip() or "auto",
+        "qwen3_forced_aligner": (qwen3_forced_aligner or "").strip()
+        or "Qwen/Qwen3-ForcedAligner-0.6B",
+        "qwen3_model": (qwen3_model or "").strip() or "Qwen/Qwen3-ASR-1.7B",
         "timeline_strategy": (timeline_strategy or "").strip() or "vad_speech",
         "upload_audio_format": (upload_audio_format or "").strip() or "wav",
         "upload_mp3_bitrate_kbps": int(UPLOAD_MP3_BITRATE_KBPS),
@@ -409,6 +486,9 @@ def run_asr(
     vad_speech_merge_gap_ms: int,
     upload_audio_format: str,
     api_concurrency: int,
+    qwen3_model: str,
+    qwen3_forced_aligner: str,
+    qwen3_device: str,
 ):
     if not audio_path:
         raise gr.Error("请先上传或录制一段音频。")
@@ -455,6 +535,9 @@ def run_asr(
         funasr_use_itn=funasr_use_itn,
         funasr_enable_vad=funasr_enable_vad,
         funasr_enable_punc=funasr_enable_punc,
+        qwen3_model=qwen3_model,
+        qwen3_forced_aligner=qwen3_forced_aligner,
+        qwen3_device=qwen3_device,
         output_format=output_format,
         language=language,
         enable_vad=enable_vad,
@@ -476,6 +559,10 @@ def run_asr(
 
     try:
         resolved_funasr_model = (funasr_model or "").strip() or DEFAULT_FUNASR_MODEL
+        resolved_qwen3_model = (qwen3_model or "").strip() or DEFAULT_QWEN3_MODEL
+        resolved_qwen3_forced_aligner = (
+            (qwen3_forced_aligner or "").strip() or DEFAULT_QWEN3_FORCED_ALIGNER
+        )
         result = transcribe_to_subtitles(
             input_audio_path=audio_path,
             asr_backend=asr_backend,
@@ -491,6 +578,9 @@ def run_asr(
             funasr_use_itn=bool(funasr_use_itn),
             funasr_enable_vad=bool(funasr_enable_vad),
             funasr_enable_punc=bool(funasr_enable_punc),
+            qwen3_model=resolved_qwen3_model,
+            qwen3_forced_aligner=resolved_qwen3_forced_aligner,
+            qwen3_device=(qwen3_device or "").strip() or DEFAULT_QWEN3_DEVICE,
             enable_vad=enable_vad,
             vad_segment_threshold_s=int(vad_segment_threshold_s),
             vad_max_segment_threshold_s=int(vad_max_segment_threshold_s),
@@ -656,8 +746,9 @@ with gr.Blocks(
             with gr.Row():
                 asr_backend = gr.Dropdown(
                     choices=[
-                        ("OpenAI API（远程）", "openai"),
+                        ("Qwen3-ASR（本地推理）", "qwen3asr"),
                         ("FunASR（本地推理）", "funasr"),
+                        ("OpenAI API（远程）", "openai"),
                     ],
                     value=DEFAULT_ASR_BACKEND,
                     label="ASR 引擎",
@@ -824,6 +915,10 @@ with gr.Blocks(
 
         with gr.Tab("引擎配置", id="tab_engine"):
             gr.Markdown(CUDA_NOTE)
+            with gr.Row():
+                release_cuda_btn = gr.Button("释放显存", variant="secondary")
+            release_cuda_status = gr.Markdown()
+
             with gr.Accordion("OpenAI 配置", open=True):
                 openai_api_key = gr.Textbox(
                     label="OpenAI API Key",
@@ -839,6 +934,43 @@ with gr.Blocks(
                 model = gr.Textbox(
                     label="模型名",
                     value=DEFAULT_MODEL,
+                )
+
+            with gr.Accordion("Qwen3-ASR 本地推理", open=False):
+                gr.Markdown("首次使用需安装：`uv sync --extra qwen3asr`")
+                gr.Markdown(f"模型下载目录（项目内）：`{get_models_dir()}`")
+                qwen3_model = gr.Dropdown(
+                    choices=[
+                        ("Qwen3-ASR-1.7B（Qwen/Qwen3-ASR-1.7B）", "Qwen/Qwen3-ASR-1.7B"),
+                    ],
+                    value=DEFAULT_QWEN3_MODEL,
+                    label="ASR 模型（HuggingFace RepoID）",
+                    allow_custom_value=True,
+                )
+                qwen3_forced_aligner = gr.Dropdown(
+                    choices=[
+                        (
+                            "ForcedAligner-0.6B（Qwen/Qwen3-ForcedAligner-0.6B）",
+                            "Qwen/Qwen3-ForcedAligner-0.6B",
+                        ),
+                    ],
+                    value=DEFAULT_QWEN3_FORCED_ALIGNER,
+                    label="Forced Aligner（必须）",
+                    allow_custom_value=True,
+                )
+                with gr.Row():
+                    download_qwen3_btn = gr.Button("下载模型", variant="secondary")
+                    load_qwen3_btn = gr.Button("加载模型", variant="primary")
+                download_qwen3_status = gr.Markdown()
+                load_qwen3_status = gr.Markdown()
+                qwen3_device = gr.Dropdown(
+                    choices=[
+                        ("自动", "auto"),
+                        ("CPU", "cpu"),
+                        ("CUDA:0", "cuda:0"),
+                    ],
+                    value=DEFAULT_QWEN3_DEVICE,
+                    label="设备",
                 )
 
             with gr.Accordion("FunASR 本地推理", open=False):
@@ -859,10 +991,8 @@ with gr.Blocks(
                 with gr.Row():
                     download_model_btn = gr.Button("下载模型", variant="secondary")
                     load_model_btn = gr.Button("加载模型", variant="primary")
-                    release_cuda_btn = gr.Button("释放显存", variant="secondary")
                 download_model_status = gr.Markdown()
                 load_model_status = gr.Markdown()
-                release_cuda_status = gr.Markdown()
                 funasr_device = gr.Dropdown(
                     choices=[
                         ("自动", "auto"),
@@ -1004,6 +1134,18 @@ with gr.Blocks(
         fn=load_funasr_model_ui,
         inputs=[funasr_model, funasr_device, funasr_enable_vad, funasr_enable_punc],
         outputs=[load_model_status],
+    )
+
+    download_qwen3_btn.click(
+        fn=download_qwen3_models_ui,
+        inputs=[qwen3_model, qwen3_forced_aligner],
+        outputs=[download_qwen3_status],
+    )
+
+    load_qwen3_btn.click(
+        fn=load_qwen3_model_ui,
+        inputs=[qwen3_model, qwen3_forced_aligner, qwen3_device],
+        outputs=[load_qwen3_status],
     )
     release_cuda_btn.click(
         fn=release_cuda_ui, inputs=[], outputs=[release_cuda_status], queue=False
@@ -1217,6 +1359,9 @@ with gr.Blocks(
             vad_speech_merge_gap_ms,
             upload_audio_format,
             api_concurrency,
+            qwen3_model,
+            qwen3_forced_aligner,
+            qwen3_device,
         ],
         outputs=[preview, full_text, out_file, debug],
         concurrency_limit=1,

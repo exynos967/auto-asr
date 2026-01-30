@@ -15,6 +15,7 @@ from auto_asr.audio_tools import load_audio, process_vad_speech, transcode_wav_t
 from auto_asr.funasr_asr import release_funasr_resources, transcribe_file_funasr
 from auto_asr.funasr_models import is_funasr_nano
 from auto_asr.openai_asr import make_openai_client, transcribe_file_verbose
+from auto_asr.qwen3_asr import Qwen3ASRConfig, release_qwen3_resources, transcribe_chunks_qwen3
 from auto_asr.subtitles import SubtitleLine, compose_srt, compose_txt, compose_vtt
 from auto_asr.vad_split import (
     WAV_SAMPLE_RATE,
@@ -81,6 +82,10 @@ def transcribe_to_subtitles(
     funasr_use_itn: bool = True,
     funasr_enable_vad: bool = True,
     funasr_enable_punc: bool = True,
+    # Qwen3-ASR local inference (Transformers backend via qwen-asr)
+    qwen3_model: str = "Qwen/Qwen3-ASR-1.7B",
+    qwen3_forced_aligner: str = "Qwen/Qwen3-ForcedAligner-0.6B",
+    qwen3_device: str = "auto",
     enable_vad: bool = True,
     vad_segment_threshold_s: int = 120,
     vad_max_segment_threshold_s: int = 180,
@@ -99,8 +104,8 @@ def transcribe_to_subtitles(
 ) -> PipelineResult:
     if output_format not in {"srt", "vtt", "txt"}:
         raise ValueError("output_format must be one of: srt, vtt, txt")
-    if asr_backend not in {"openai", "funasr"}:
-        raise ValueError("asr_backend must be one of: openai, funasr")
+    if asr_backend not in {"openai", "funasr", "qwen3asr"}:
+        raise ValueError("asr_backend must be one of: openai, funasr, qwen3asr")
     if timeline_strategy not in {"chunk", "vad_speech"}:
         raise ValueError("timeline_strategy must be one of: chunk, vad_speech")
     if upload_audio_format not in {"wav", "mp3"}:
@@ -410,6 +415,115 @@ def transcribe_to_subtitles(
                 release_funasr_resources()
             except Exception as e:  # pragma: no cover
                 logger.info("FunASR 资源清理失败(忽略): %s", e)
+
+    if asr_backend == "qwen3asr":
+        try:
+            return_time_stamps = output_format in {"srt", "vtt"}
+
+            # Forced aligner supports up to ~5 minutes. For long audio, we force chunking to keep
+            # each chunk within a safe window. We still prefer model timestamps within each chunk.
+            max_align_chunk_s = 300
+            force_split = return_time_stamps and vad_max_segment_threshold_s > max_align_chunk_s
+
+            chunks, used_vad = load_and_split(
+                file_path=input_audio_path,
+                enable_vad=bool(enable_vad) or force_split,
+                vad_segment_threshold_s=int(vad_segment_threshold_s),
+                vad_max_segment_threshold_s=min(int(vad_max_segment_threshold_s), max_align_chunk_s)
+                if force_split
+                else int(vad_max_segment_threshold_s),
+                vad_threshold=float(vad_threshold),
+                vad_min_speech_duration_ms=int(vad_min_speech_duration_ms),
+                vad_min_silence_duration_ms=int(vad_min_silence_duration_ms),
+                vad_speech_pad_ms=int(vad_speech_pad_ms),
+                vad_min_duration_s=0 if force_split else 180,
+            )
+
+            cfg = Qwen3ASRConfig(
+                model=(qwen3_model or "").strip() or "Qwen/Qwen3-ASR-1.7B",
+                forced_aligner=(qwen3_forced_aligner or "").strip()
+                or "Qwen/Qwen3-ForcedAligner-0.6B",
+                device=(qwen3_device or "").strip() or "auto",
+            )
+
+            wavs = [c.wav for c in chunks]
+            results = transcribe_chunks_qwen3(
+                chunks=wavs,
+                cfg=cfg,
+                language=language or None,
+                return_time_stamps=return_time_stamps,
+                sample_rate=WAV_SAMPLE_RATE,
+            )
+
+            subtitle_lines: list[SubtitleLine] = []
+            full_text_parts: list[str] = []
+            total_segments = 0
+
+            for idx, chunk in enumerate(chunks):
+                _check_cancel(cancel_event)
+                asr = results[idx]
+                full_text_parts.append((asr.text or "").strip())
+
+                if output_format in {"srt", "vtt"} and asr.segments:
+                    for seg in asr.segments:
+                        subtitle_lines.append(
+                            SubtitleLine(
+                                start_s=chunk.start_s + seg.start_s,
+                                end_s=chunk.start_s + seg.end_s,
+                                text=seg.text,
+                            )
+                        )
+                    total_segments += len(asr.segments)
+                elif output_format in {"srt", "vtt"}:
+                    subtitle_lines.append(
+                        SubtitleLine(
+                            start_s=chunk.start_s,
+                            end_s=chunk.end_s,
+                            text=asr.text,
+                        )
+                    )
+                    total_segments += 1
+
+            full_text = "\n".join([t for t in full_text_parts if t]).strip()
+            subtitle_lines.sort(key=lambda x: (x.start_s, x.end_s))
+
+            if output_format == "srt":
+                subtitle_text = compose_srt(subtitle_lines)
+                ext = "srt"
+            elif output_format == "vtt":
+                subtitle_text = compose_vtt(subtitle_lines)
+                ext = "vtt"
+            else:
+                subtitle_text = compose_txt(full_text)
+                ext = "txt"
+
+            out_base = f"{_safe_stem(input_audio_path)}-{time.strftime('%Y%m%d-%H%M%S')}"
+            out_path = Path(outputs_dir) / f"{out_base}.{ext}"
+            _write_text(out_path, subtitle_text)
+
+            preview = subtitle_text[:5000]
+            debug = (
+                f"backend=qwen3asr, model={cfg.model}, forced_aligner={cfg.forced_aligner}, "
+                f"device={cfg.device}, chunks={len(chunks)}, segments={total_segments}, "
+                f"vad={'on' if enable_vad else 'off'}(used={used_vad})"
+            )
+            logger.info(
+                "转写完成(qwen3asr): out=%s, chunks=%d, segments=%d",
+                out_path,
+                len(chunks),
+                total_segments,
+            )
+            return PipelineResult(
+                preview_text=preview,
+                full_text=full_text,
+                subtitle_file_path=str(out_path),
+                debug=debug,
+            )
+        finally:
+            try:
+                release_qwen3_resources()
+            except Exception as e:  # pragma: no cover
+                logger.info("Qwen3-ASR 资源清理失败(忽略): %s", e)
 
     client = make_openai_client(api_key=openai_api_key, base_url=openai_base_url)
 
