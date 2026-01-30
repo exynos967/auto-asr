@@ -58,7 +58,7 @@ def _import_qwen_asr() -> Any:
     except Exception as e:  # pragma: no cover
         raise RuntimeError(
             "未安装 Qwen3-ASR 依赖，无法使用 Qwen3 本地推理。"
-            "请先安装：`uv sync --extra qwen3asr` 或 `uv pip install -U qwen-asr`"
+            "请先安装：`uv sync --extra transformers` 或 `uv pip install -U qwen-asr`"
         ) from e
 
 

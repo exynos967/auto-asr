@@ -186,7 +186,7 @@ funasr = [
     { name = "tiktoken" },
     { name = "transformers" },
 ]
-qwen3asr = [
+transformers = [
     { name = "huggingface-hub" },
     { name = "modelscope" },
     { name = "qwen-asr" },
@@ -204,23 +204,23 @@ dev = [
 requires-dist = [
     { name = "funasr", marker = "extra == 'funasr'" },
     { name = "gradio" },
-    { name = "huggingface-hub", marker = "extra == 'qwen3asr'" },
+    { name = "huggingface-hub", marker = "extra == 'transformers'" },
     { name = "imageio-ffmpeg" },
     { name = "json-repair" },
     { name = "modelscope", marker = "extra == 'funasr'" },
-    { name = "modelscope", marker = "extra == 'qwen3asr'" },
+    { name = "modelscope", marker = "extra == 'transformers'" },
     { name = "numpy", specifier = "<2.2" },
     { name = "openai" },
-    { name = "qwen-asr", marker = "extra == 'qwen3asr'" },
+    { name = "qwen-asr", marker = "extra == 'transformers'" },
     { name = "sentencepiece", marker = "extra == 'funasr'" },
-    { name = "sentencepiece", marker = "extra == 'qwen3asr'" },
+    { name = "sentencepiece", marker = "extra == 'transformers'" },
     { name = "silero-vad" },
     { name = "soundfile" },
     { name = "tiktoken", marker = "extra == 'funasr'" },
     { name = "transformers", marker = "extra == 'funasr'" },
-    { name = "transformers", marker = "extra == 'qwen3asr'" },
+    { name = "transformers", marker = "extra == 'transformers'" },
 ]
-provides-extras = ["funasr", "qwen3asr"]
+provides-extras = ["funasr", "transformers"]
 
 [package.metadata.requires-dev]
 dev = [

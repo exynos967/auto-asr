@@ -24,14 +24,15 @@ funasr = [
     # SenseVoice/FunASR-Nano tokenizers may require `tiktoken`.
     "tiktoken",
 ]
-qwen3asr = [
-    "qwen-asr",
+transformers = [
+    # Transformers backend runtime for local ASR models (e.g. Qwen3-ASR).
+    "transformers",
+    "sentencepiece",
     # Used by our model downloader (ModelScope preferred, HF fallback).
     "modelscope",
     "huggingface_hub",
-    # Tokenizers / transformers backend.
-    "transformers",
-    "sentencepiece",
+    # Qwen3-ASR wrapper library (Transformers backend + forced aligner).
+    "qwen-asr",
 ]
 
 [dependency-groups]

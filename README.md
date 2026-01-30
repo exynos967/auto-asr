@@ -18,7 +18,7 @@ uv sync
 如需使用「Qwen3-ASR（本地推理）」：
 
 ```bash
-uv sync --extra qwen3asr
+uv sync --extra transformers
 ```
 
 Qwen3-ASR 本地模型（HuggingFace）：
