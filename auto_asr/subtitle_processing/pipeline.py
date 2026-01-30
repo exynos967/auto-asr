@@ -36,6 +36,24 @@ def _make_openai_chat_json(
     llm_model: str,
     llm_temperature: float = 0.2,
 ) -> Callable[..., dict[str, str]]:
+    chat_fn = _make_openai_chat_fn(api_key=api_key, base_url=base_url)
+
+    def chat_json(*, system_prompt: str, payload: dict[str, str], **kwargs) -> dict[str, str]:
+        temperature = float(kwargs.get("temperature", llm_temperature))
+        max_steps = int(kwargs.get("max_steps", 3))
+        return call_chat_json_agent_loop(
+            chat_fn=chat_fn,
+            system_prompt=system_prompt,
+            payload=payload,
+            model=llm_model,
+            temperature=temperature,
+            max_steps=max_steps,
+        )
+
+    return chat_json
+
+
+def _make_openai_chat_fn(*, api_key: str, base_url: str | None):
     api_key = (api_key or "").strip()
     if not api_key:
         raise RuntimeError("请在 Web UI 中填写 OpenAI API Key。")
@@ -103,19 +121,38 @@ def _make_openai_chat_json(
                     continue
                 raise
 
-    def chat_json(*, system_prompt: str, payload: dict[str, str], **kwargs) -> dict[str, str]:
-        temperature = float(kwargs.get("temperature", llm_temperature))
-        max_steps = int(kwargs.get("max_steps", 3))
-        return call_chat_json_agent_loop(
-            chat_fn=chat_fn,
-            system_prompt=system_prompt,
-            payload=payload,
-            model=llm_model,
-            temperature=temperature,
-            max_steps=max_steps,
-        )
+    return chat_fn
 
-    return chat_json
+
+def _make_openai_chat_text(
+    *,
+    api_key: str,
+    base_url: str | None,
+    llm_model: str,
+    llm_temperature: float = 0.2,
+) -> Callable[..., str]:
+    chat_fn = _make_openai_chat_fn(api_key=api_key, base_url=base_url)
+
+    def chat_text(
+        *,
+        system_prompt: str | None = None,
+        user_prompt: str | None = None,
+        messages: list[dict[str, str]] | None = None,
+        **kwargs,
+    ) -> str:
+        temperature = float(kwargs.get("temperature", llm_temperature))
+        model = str(kwargs.get("model", llm_model) or llm_model)
+        msgs = messages
+        if msgs is None:
+            if system_prompt is None or user_prompt is None:
+                raise TypeError("chat_text requires either messages=... or system_prompt+user_prompt")
+            msgs = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        return str(chat_fn(msgs, model=model, temperature=temperature) or "")
+
+    return chat_text
 
 
 def process_subtitle_file(
@@ -129,6 +166,7 @@ def process_subtitle_file(
     openai_api_key: str = "",
     openai_base_url: str | None = None,
     chat_json: Callable[..., dict[str, str]] | None = None,
+    chat_text: Callable[..., str] | None = None,
 ) -> SubtitleProcessingResult:
     """Process a subtitle file and write processed output to disk.
 
@@ -140,6 +178,20 @@ def process_subtitle_file(
     in_path_p = Path(in_path)
     lines: list[SubtitleLine] = load_subtitle_file(str(in_path_p))
 
+    if chat_text is None and chat_json is not None:
+        # Best-effort compatibility: allow pure-test setups that only inject chat_json.
+        def chat_text(*, system_prompt: str, user_prompt: str, **kwargs) -> str:
+            out = chat_json(system_prompt=system_prompt, payload={"0": user_prompt}, **kwargs)
+            return str(out.get("0", "") or "")
+
+    if chat_text is None:
+        chat_text = _make_openai_chat_text(
+            api_key=openai_api_key,
+            base_url=openai_base_url,
+            llm_model=(llm_model or "").strip() or "gpt-4o-mini",
+            llm_temperature=float(llm_temperature),
+        )
+
     if chat_json is None:
         chat_json = _make_openai_chat_json(
             api_key=openai_api_key,
@@ -148,7 +200,7 @@ def process_subtitle_file(
             llm_temperature=float(llm_temperature),
         )
 
-    ctx = ProcessorContext(chat_json=chat_json)
+    ctx = ProcessorContext(chat_json=chat_json, chat_text=chat_text)
 
     started = time.time()
     out_lines = proc.process(lines, ctx=ctx, options=options or {})
@@ -186,6 +238,7 @@ def process_subtitle_file_multi(
     openai_api_key: str = "",
     openai_base_url: str | None = None,
     chat_json: Callable[..., dict[str, str]] | None = None,
+    chat_text: Callable[..., str] | None = None,
 ) -> SubtitleProcessingResult:
     """Process a subtitle file with multiple processors in order and write output to disk."""
     if not processors:
@@ -193,6 +246,19 @@ def process_subtitle_file_multi(
 
     in_path_p = Path(in_path)
     lines: list[SubtitleLine] = load_subtitle_file(str(in_path_p))
+
+    if chat_text is None and chat_json is not None:
+        def chat_text(*, system_prompt: str, user_prompt: str, **kwargs) -> str:
+            out = chat_json(system_prompt=system_prompt, payload={"0": user_prompt}, **kwargs)
+            return str(out.get("0", "") or "")
+
+    if chat_text is None:
+        chat_text = _make_openai_chat_text(
+            api_key=openai_api_key,
+            base_url=openai_base_url,
+            llm_model=(llm_model or "").strip() or "gpt-4o-mini",
+            llm_temperature=float(llm_temperature),
+        )
 
     if chat_json is None:
         chat_json = _make_openai_chat_json(
@@ -202,7 +268,7 @@ def process_subtitle_file_multi(
             llm_temperature=float(llm_temperature),
         )
 
-    ctx = ProcessorContext(chat_json=chat_json)
+    ctx = ProcessorContext(chat_json=chat_json, chat_text=chat_text)
 
     started = time.time()
     step_debug: list[str] = []

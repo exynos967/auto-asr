@@ -45,6 +45,9 @@ def save_subtitle_processing_settings(
     concurrency: int,
     target_language: str,
     split_mode: str,
+    split_max_word_count_cjk: int,
+    split_max_word_count_english: int,
+    translate_reflect: bool,
     custom_prompt: str,
 ) -> None:
     allowed_processors = {"optimize", "translate", "split"}
@@ -73,6 +76,18 @@ def save_subtitle_processing_settings(
     if mode not in {"inplace_newlines", "split_to_cues"}:
         mode = "inplace_newlines"
 
+    try:
+        mw_cjk = int(split_max_word_count_cjk)
+    except Exception:
+        mw_cjk = 18
+    mw_cjk = max(1, min(200, mw_cjk))
+
+    try:
+        mw_en = int(split_max_word_count_english)
+    except Exception:
+        mw_en = 12
+    mw_en = max(1, min(200, mw_en))
+
     update_config(
         {
             "subtitle_processors": proc_list,
@@ -80,6 +95,9 @@ def save_subtitle_processing_settings(
             "subtitle_concurrency": cc,
             "subtitle_target_language": lang,
             "subtitle_split_mode": mode,
+            "subtitle_split_max_word_count_cjk": mw_cjk,
+            "subtitle_split_max_word_count_english": mw_en,
+            "subtitle_translate_reflect": bool(translate_reflect),
             "subtitle_custom_prompt": str(custom_prompt or ""),
         }
     )

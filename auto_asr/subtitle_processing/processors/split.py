@@ -1,15 +1,153 @@
 from __future__ import annotations
 
+import difflib
 import math
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+from auto_asr.subtitle_processing.prompts import get_prompt
 from auto_asr.subtitle_processing.base import (
     ProcessorContext,
     SubtitleProcessor,
     register_processor,
 )
 from auto_asr.subtitles import SubtitleLine
+
+# ==================== VideoCaptioner-compatible validation ====================
+
+_NO_SPACE_LANGUAGES = r"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u0900-\u0dff]"
+
+
+def _is_mainly_cjk(text: str, threshold: float = 0.5) -> bool:
+    if not text:
+        return False
+
+    no_space_count = len(re.findall(_NO_SPACE_LANGUAGES, text))
+    total_chars = len("".join(text.split()))
+    return no_space_count / total_chars > threshold if total_chars > 0 else False
+
+
+def _count_words(text: str) -> int:
+    if not text:
+        return 0
+
+    char_count = len(re.findall(_NO_SPACE_LANGUAGES, text))
+    word_text = re.sub(_NO_SPACE_LANGUAGES, " ", text)
+    word_count = len(word_text.strip().split())
+    return char_count + word_count
+
+
+MAX_STEPS = 2
+
+
+def _validate_split_result(
+    *,
+    original_text: str,
+    split_result: list[str],
+    max_word_count_cjk: int,
+    max_word_count_english: int,
+) -> tuple[bool, str]:
+    if not split_result:
+        return False, "No segments found. Split the text with <br> tags."
+
+    original_cleaned = re.sub(r"\s+", " ", original_text)
+    text_is_cjk = _is_mainly_cjk(original_cleaned)
+
+    merged_char = "" if text_is_cjk else " "
+    merged = merged_char.join(split_result)
+    merged_cleaned = re.sub(r"\s+", " ", merged)
+
+    matcher = difflib.SequenceMatcher(None, original_cleaned, merged_cleaned)
+    similarity_ratio = matcher.ratio()
+    if similarity_ratio < 0.96:
+        return (
+            False,
+            f"Content modified (similarity: {similarity_ratio:.1%}). "
+            "Keep original text unchanged, only insert <br> between words.",
+        )
+
+    violations: list[str] = []
+    for i, segment in enumerate(split_result, 1):
+        word_count = _count_words(segment)
+        max_allowed = max_word_count_cjk if text_is_cjk else max_word_count_english
+        if word_count > max_allowed:
+            segment_preview = segment[:40] + "..." if len(segment) > 40 else segment
+            violations.append(
+                f"Segment {i} '{segment_preview}': {word_count} "
+                f"{'chars' if text_is_cjk else 'words'} > {max_allowed} limit"
+            )
+
+    if violations:
+        error_msg = "Length violations:\n" + "\n".join(f"- {v}" for v in violations)
+        error_msg += (
+            "\n\nSplit these long segments further with <br>, then output the COMPLETE text with ALL segments (not just the fixed ones)."
+        )
+        return False, error_msg
+
+    return True, ""
+
+
+def _split_with_agent_loop(
+    *,
+    ctx: ProcessorContext,
+    text: str,
+    prompt_path: str,
+    max_word_count_cjk: int,
+    max_word_count_english: int,
+    delimiter: str = "<br>",
+) -> list[str]:
+    if ctx.chat_text is None:
+        raise RuntimeError("ctx.chat_text is required for SplitProcessor")
+
+    system_prompt = get_prompt(
+        prompt_path,
+        max_word_count_cjk=max_word_count_cjk,
+        max_word_count_english=max_word_count_english,
+    )
+    user_prompt = (
+        f"Please use multiple {delimiter} tags to separate the following sentence:\n{text}"
+    )
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    last_result: list[str] | None = None
+
+    for _step in range(MAX_STEPS):
+        result_text = str(ctx.chat_text(messages=messages, temperature=0.1) or "")
+        result_text_cleaned = re.sub(r"\n+", "", result_text)
+        split_result = [
+            segment.strip()
+            for segment in result_text_cleaned.split(delimiter)
+            if segment.strip()
+        ]
+
+        last_result = split_result if split_result else [text]
+
+        ok, error_message = _validate_split_result(
+            original_text=text,
+            split_result=split_result,
+            max_word_count_cjk=max_word_count_cjk,
+            max_word_count_english=max_word_count_english,
+        )
+        if ok:
+            return split_result
+
+        messages.append({"role": "assistant", "content": result_text})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"Error: {error_message}\n"
+                    "Fix the errors above and output the COMPLETE corrected text with <br> tags "
+                    "(include ALL segments, not just the fixed ones), no explanation."
+                ),
+            }
+        )
+
+    return [text]
 
 
 def split_text_by_delimiter(text: str, delimiter: str = "<br>") -> list[str]:
@@ -83,43 +221,30 @@ class SplitProcessor(SubtitleProcessor):
         concurrency = int(options.get("concurrency") or 4)
         concurrency = max(1, min(32, concurrency))
 
-        if strategy == "sentence":
-            strategy_instruction = "Split at natural sentence boundaries (punctuation/pauses)."
-            strategy_hint = "sentence boundaries"
-        else:
-            strategy_instruction = (
-                "Split at semantic boundaries for readability (you may split within a sentence)."
-            )
-            strategy_hint = "semantic boundaries"
+        max_word_count_cjk = int(options.get("max_word_count_cjk") or 18)
+        max_word_count_english = int(options.get("max_word_count_english") or 12)
+        max_word_count_cjk = max(1, min(200, max_word_count_cjk))
+        max_word_count_english = max(1, min(200, max_word_count_english))
 
-        system_prompt = (
-            "You are a professional subtitle splitter.\n"
-            f"{strategy_instruction}\n"
-            f"Strategy: {strategy_hint}\n"
-            f"Insert `{delimiter}` into the text to split it.\n"
-            "Keep the original text unchanged except inserting the delimiter.\n"
-            "Return ONLY a valid JSON dictionary mapping the SAME keys to the processed text.\n"
-            "Do not add or remove keys.\n"
-        )
+        prompt_path = "split/sentence" if strategy == "sentence" else "split/semantic"
 
         indexed = [(str(i), line) for i, line in enumerate(lines, 1)]
 
         def split_one(key: str, line: SubtitleLine) -> tuple[str, list[str]]:
-            payload = {key: line.text}
-            out = ctx.chat_json(system_prompt=system_prompt, payload=payload)
-            candidate = str(out.get(key, line.text) or line.text)
-            parts = split_text_by_delimiter(candidate, delimiter=delimiter)
-            if not parts:
+            try:
+                parts = _split_with_agent_loop(
+                    ctx=ctx,
+                    text=line.text,
+                    prompt_path=prompt_path,
+                    max_word_count_cjk=max_word_count_cjk,
+                    max_word_count_english=max_word_count_english,
+                    delimiter=delimiter,
+                )
+                return key, parts
+            except Exception as e:
+                if getattr(e, "status_code", None) in {401, 403}:
+                    raise
                 return key, [line.text]
-
-            merged = _merge_parts_like_original(line.text, parts)
-            orig_norm = re.sub(r"\s+", " ", line.text).strip()
-            merged_norm = re.sub(r"\s+", " ", merged).strip()
-            if orig_norm and merged_norm and orig_norm != merged_norm:
-                # Content changed; fallback to original.
-                return key, [line.text]
-
-            return key, parts
 
         parts_map: dict[str, list[str]] = {}
         with ThreadPoolExecutor(max_workers=concurrency) as ex:

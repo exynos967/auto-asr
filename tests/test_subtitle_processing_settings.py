@@ -17,6 +17,9 @@ def test_save_subtitle_processing_settings_saves_values(tmp_path, monkeypatch):
         concurrency=7,
         target_language="ja",
         split_mode="split_to_cues",
+        split_max_word_count_cjk=18,
+        split_max_word_count_english=12,
+        translate_reflect=True,
         custom_prompt="keep terms",
     )
 
@@ -26,5 +29,7 @@ def test_save_subtitle_processing_settings_saves_values(tmp_path, monkeypatch):
     assert loaded["subtitle_concurrency"] == 7
     assert loaded["subtitle_target_language"] == "ja"
     assert loaded["subtitle_split_mode"] == "split_to_cues"
+    assert loaded["subtitle_split_max_word_count_cjk"] == 18
+    assert loaded["subtitle_split_max_word_count_english"] == 12
+    assert loaded["subtitle_translate_reflect"] is True
     assert loaded["subtitle_custom_prompt"] == "keep terms"
-

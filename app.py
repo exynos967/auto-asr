@@ -106,6 +106,14 @@ DEFAULT_SUBTITLE_SPLIT_STRATEGY = (
 if DEFAULT_SUBTITLE_SPLIT_STRATEGY not in {"semantic", "sentence"}:
     DEFAULT_SUBTITLE_SPLIT_STRATEGY = "semantic"
 
+DEFAULT_SUBTITLE_SPLIT_MAX_WORD_COUNT_CJK = _clamp_int(
+    _int(_SAVED_CONFIG.get("subtitle_split_max_word_count_cjk"), 18), 1, 200
+)
+DEFAULT_SUBTITLE_SPLIT_MAX_WORD_COUNT_ENGLISH = _clamp_int(
+    _int(_SAVED_CONFIG.get("subtitle_split_max_word_count_english"), 12), 1, 200
+)
+DEFAULT_SUBTITLE_TRANSLATE_REFLECT = bool(_SAVED_CONFIG.get("subtitle_translate_reflect", False))
+
 DEFAULT_FUNASR_MODEL = _str(_SAVED_CONFIG.get("funasr_model", "iic/SenseVoiceSmall")).strip()
 DEFAULT_FUNASR_DEVICE = _str(_SAVED_CONFIG.get("funasr_device", "auto")).strip() or "auto"
 if DEFAULT_FUNASR_DEVICE not in {"auto", "cpu", "cuda:0"}:
@@ -407,7 +415,10 @@ def _save_subtitle_processing_settings_ui(
     batch_size: int,
     concurrency: int,
     target_language: str,
+    translate_reflect: bool,
     split_mode: str,
+    split_max_word_count_cjk: int,
+    split_max_word_count_english: int,
     custom_prompt: str,
 ):
     try:
@@ -416,7 +427,10 @@ def _save_subtitle_processing_settings_ui(
             batch_size=int(batch_size),
             concurrency=int(concurrency),
             target_language=target_language,
+            translate_reflect=bool(translate_reflect),
             split_mode=split_mode,
+            split_max_word_count_cjk=int(split_max_word_count_cjk),
+            split_max_word_count_english=int(split_max_word_count_english),
             custom_prompt=custom_prompt,
         )
     except Exception as e:
@@ -665,8 +679,11 @@ def run_subtitle_processing(
     subtitle_llm_model: str,
     subtitle_llm_temperature: float,
     target_language: str,
+    translate_reflect: bool,
     split_strategy: str,
     split_mode: str,
+    split_max_word_count_cjk: int,
+    split_max_word_count_english: int,
     custom_prompt: str,
     batch_size: int,
     concurrency: int,
@@ -679,7 +696,10 @@ def run_subtitle_processing(
         batch_size=int(batch_size),
         concurrency=int(concurrency),
         target_language=target_language,
+        translate_reflect=bool(translate_reflect),
         split_mode=split_mode,
+        split_max_word_count_cjk=int(split_max_word_count_cjk),
+        split_max_word_count_english=int(split_max_word_count_english),
         custom_prompt=custom_prompt,
     )
 
@@ -711,6 +731,7 @@ def run_subtitle_processing(
         options_by_processor["translate"] = {
             **common,
             "target_language": (target_language or "").strip() or "zh",
+            "reflect": bool(translate_reflect),
             "custom_prompt": (custom_prompt or "").strip(),
             "batch_size": int(batch_size),
         }
@@ -725,6 +746,8 @@ def run_subtitle_processing(
             **common,
             "strategy": (split_strategy or "").strip() or "semantic",
             "mode": (split_mode or "").strip() or "inplace_newlines",
+            "max_word_count_cjk": int(split_max_word_count_cjk),
+            "max_word_count_english": int(split_max_word_count_english),
         }
 
     save_subtitle_provider_settings(
@@ -915,6 +938,10 @@ with gr.Blocks(
                     value=DEFAULT_SUBTITLE_TARGET_LANGUAGE,
                     label="目标语言（仅翻译）",
                 )
+                translate_reflect = gr.Checkbox(
+                    value=DEFAULT_SUBTITLE_TRANSLATE_REFLECT,
+                    label="反思翻译（更自然）",
+                )
                 split_strategy = gr.Dropdown(
                     choices=[
                         ("语义断句（更易读，适合长句/无标点）", "semantic"),
@@ -930,6 +957,22 @@ with gr.Blocks(
                     ],
                     value=DEFAULT_SUBTITLE_SPLIT_MODE,
                     label="输出形式（仅断句）",
+                )
+
+            with gr.Row():
+                split_max_word_count_cjk = gr.Slider(
+                    minimum=1,
+                    maximum=200,
+                    value=DEFAULT_SUBTITLE_SPLIT_MAX_WORD_COUNT_CJK,
+                    step=1,
+                    label="每段最大字数（CJK，如中/日/韩）",
+                )
+                split_max_word_count_english = gr.Slider(
+                    minimum=1,
+                    maximum=200,
+                    value=DEFAULT_SUBTITLE_SPLIT_MAX_WORD_COUNT_ENGLISH,
+                    step=1,
+                    label="每段最大单词数（英文等）",
                 )
 
             custom_prompt = gr.Textbox(
@@ -1313,7 +1356,10 @@ with gr.Blocks(
             batch_size,
             subtitle_concurrency,
             target_language,
+            translate_reflect,
             split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
             custom_prompt,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -1326,7 +1372,10 @@ with gr.Blocks(
             batch_size,
             subtitle_concurrency,
             target_language,
+            translate_reflect,
             split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
             custom_prompt,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -1339,7 +1388,10 @@ with gr.Blocks(
             batch_size,
             subtitle_concurrency,
             target_language,
+            translate_reflect,
             split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
             custom_prompt,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -1352,7 +1404,26 @@ with gr.Blocks(
             batch_size,
             subtitle_concurrency,
             target_language,
+            translate_reflect,
             split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
+            custom_prompt,
+        ],
+        outputs=[subtitle_llm_settings_state],
+        queue=False,
+    )
+    translate_reflect.change(
+        fn=_save_subtitle_processing_settings_ui,
+        inputs=[
+            subtitle_processors,
+            batch_size,
+            subtitle_concurrency,
+            target_language,
+            translate_reflect,
+            split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
             custom_prompt,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -1365,7 +1436,42 @@ with gr.Blocks(
             batch_size,
             subtitle_concurrency,
             target_language,
+            translate_reflect,
             split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
+            custom_prompt,
+        ],
+        outputs=[subtitle_llm_settings_state],
+        queue=False,
+    )
+    split_max_word_count_cjk.change(
+        fn=_save_subtitle_processing_settings_ui,
+        inputs=[
+            subtitle_processors,
+            batch_size,
+            subtitle_concurrency,
+            target_language,
+            translate_reflect,
+            split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
+            custom_prompt,
+        ],
+        outputs=[subtitle_llm_settings_state],
+        queue=False,
+    )
+    split_max_word_count_english.change(
+        fn=_save_subtitle_processing_settings_ui,
+        inputs=[
+            subtitle_processors,
+            batch_size,
+            subtitle_concurrency,
+            target_language,
+            translate_reflect,
+            split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
             custom_prompt,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -1378,7 +1484,10 @@ with gr.Blocks(
             batch_size,
             subtitle_concurrency,
             target_language,
+            translate_reflect,
             split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
             custom_prompt,
         ],
         outputs=[subtitle_llm_settings_state],
@@ -1396,8 +1505,11 @@ with gr.Blocks(
             subtitle_llm_model,
             subtitle_llm_temperature,
             target_language,
+            translate_reflect,
             split_strategy,
             split_mode,
+            split_max_word_count_cjk,
+            split_max_word_count_english,
             custom_prompt,
             batch_size,
             subtitle_concurrency,

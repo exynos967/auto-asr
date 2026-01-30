@@ -27,9 +27,11 @@ def test_subtitle_processors_raise_on_auth_error(proc, options):
     def chat_json(*, system_prompt: str, payload: dict[str, str], **_kwargs):
         raise DummyAuthError(401)
 
-    ctx = ProcessorContext(chat_json=chat_json)
+    def chat_text(*, messages: list[dict[str, str]], **_kwargs):
+        raise DummyAuthError(401)
+
+    ctx = ProcessorContext(chat_json=chat_json, chat_text=chat_text)
     lines = [SubtitleLine(start_s=0.0, end_s=1.0, text="hello")]
 
     with pytest.raises(DummyAuthError):
         proc.process(lines, ctx=ctx, options=options)
-

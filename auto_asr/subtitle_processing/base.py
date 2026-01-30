@@ -11,6 +11,7 @@ class ProcessorContext:
     """Inputs shared by all processors."""
 
     chat_json: Callable[..., dict[str, str]]
+    chat_text: Callable[..., str] | None = None
 
 
 class SubtitleProcessor:
