@@ -1,99 +1,138 @@
-# auto-asr (Gradio + OpenAI / FunASR / Transformers)
+# auto-asr（Gradio 网页界面 + 多后端 ASR + 字幕处理）
 
-Upload/record audio in a Gradio UI, transcribe via OpenAI API or local FunASR/Transformers, and download subtitles as `srt` / `vtt` / `txt`.
+一个本地网页界面（基于 Gradio）的工具：上传/录制音频后进行转写，并导出字幕文件（`srt` / `vtt` / `txt`）。支持多个转写后端，并提供一套可配置的字幕 LLM 处理流程（校正/翻译/智能断句）。
 
-## Setup
+## 功能一览
+
+- 转写后端
+  - OpenAI 接口（远程）
+  - FunASR（本地）
+  - Transformers 后端（本地；当前默认用于 Qwen3-ASR）
+- 长音频切分与字幕轴
+  - 统一使用 **Silero VAD** 做切分/语音段时间轴（不依赖 FunASR 内置 VAD、也不依赖强制对齐模型）
+- 字幕处理（LLM）
+  - 字幕校正（LLM）
+  - 字幕翻译（LLM）
+  - 智能断句（LLM，可选“直接换行”或“拆成多条字幕并重分配时间轴”）
+- 资源管理
+  - 网页界面提供“释放显存”按钮（清理本进程的模型缓存与 torch 的 CUDA 缓存）
+
+## 快速开始
+
+1) 安装依赖
 
 ```bash
 cd /root/workdir/auto-asr
 uv sync
 ```
 
-启动后在页面的「OpenAI 配置」里填写 `OpenAI API Key`（以及可选的 `Base URL`）。
-配置会在每次点击「开始转写」时自动保存到项目根目录的 `.auto_asr_config.json`（明文保存 key，已加入 `.gitignore`）。如需重置配置，删除该文件即可。
+2) 启动网页界面（WebUI）
 
-如需使用「Qwen3-ASR（本地推理）」：
+```bash
+uv run python app.py
+```
+
+启动后会打印本地访问地址（例如 `http://127.0.0.1:7860`），用浏览器打开即可。
+
+3) 配置与持久化
+
+- 网页界面中的配置会自动保存到项目根目录 `.auto_asr_config.json`
+- 如需重置配置：删除 `.auto_asr_config.json`
+
+## 可选：启用本地推理后端
+
+### Qwen3-ASR（Transformers 本地推理）
+
+安装（体积较大）：
 
 ```bash
 uv sync --extra transformers
 ```
 
-Qwen3-ASR 本地模型（HuggingFace）：
+模型地址：
 
-- Qwen3-ASR-1.7B: `https://huggingface.co/Qwen/Qwen3-ASR-1.7B`
+- Qwen3-ASR-1.7B：`https://huggingface.co/Qwen/Qwen3-ASR-1.7B`
 
-WebUI 使用时在「引擎配置 -> Qwen3-ASR」点击「下载模型/加载模型」即可。
-输出 `srt/vtt` 时字幕轴统一使用 Silero VAD 的语音段时间轴（无需 Forced Aligner）；长音频会自动切分以避免显存压力（单段最多约 300s，且受 VAD 配置影响）。
+使用方式：
 
-如需使用「FunASR（本地推理）」：
+- 在网页界面「引擎配置 -> Qwen3-ASR 本地推理」里点击「下载模型 / 加载模型」
+- 输出 `srt/vtt` 时，字幕轴统一来自 Silero VAD 的语音段时间轴（无需强制对齐模型）
+
+### FunASR（本地推理）
+
+安装（体积较大）：
 
 ```bash
 uv sync --extra funasr
 ```
 
-如遇报错 `No module named 'tiktoken'`，说明缺少 SenseVoice/FunASR-Nano 可能用到的 tokenizer 依赖；重新执行上面的 `uv sync --extra funasr`（或单独 `uv pip install tiktoken`）即可。
+常用模型：
 
-FunASR 本地模型（HuggingFace）：
+- SenseVoiceSmall：`https://huggingface.co/iic/SenseVoiceSmall`
+- Fun-ASR-Nano-2512：`https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512`
 
-- SenseVoiceSmall: `https://huggingface.co/iic/SenseVoiceSmall`
-- Fun-ASR-Nano-2512: `https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512`
+常见报错：
 
-模型存放位置：
+- `No module named 'tiktoken'`：执行 `uv sync --extra funasr` 或 `uv pip install tiktoken`
 
-- 目录结构取决于底层下载器：
-  - ModelScope 通常在 `./models/hub/models/<组织>/<模型名>/...`
-  - HuggingFace 通常在 `./models/huggingface/hub/...`
-- `FunAudioLLM/Fun-ASR-Nano-2512` 还会自动下载依赖模型 `Qwen/Qwen3-0.6B`，并放置/链接到
-  `<Fun-ASR-Nano-2512>/Qwen3-0.6B`（体积较大，首次下载较慢）。
+## 切分与字幕轴（Silero VAD）
 
-Windows + Python 3.12 可能会遇到 `llvmlite/numba` 依赖不兼容导致安装失败
-建议改用 Python 3.11（或 3.10）创建环境后再安装（本项目已将 `numpy` 约束到 `numpy<2.2`，以避免 `numba` 选择到不兼容版本）：
+在网页界面「切分与字幕轴」里：
+
+- `启用 VAD`：用于长音频切分、以及“语音段模式”的时间轴
+- `时间轴策略`
+  - `vad_speech`：优先按语音段输出字幕轴（推荐；对长音频更稳定）
+  - `chunk`：按切分块输出字幕轴
+
+说明：
+
+- FunASR 内置 VAD 已移除；Qwen3-ASR 强制对齐模型已移除
+- 当前项目内所有“切分/字幕轴”统一走 Silero VAD
+
+## 字幕处理（LLM）
+
+在网页界面「字幕处理」标签页：
+
+- 支持上传 `.srt/.vtt` 后做：
+  - 字幕校正（LLM）
+  - 字幕翻译（LLM）
+  - 智能断句（LLM）
+- LLM 配置独立于“转写引擎配置”，在「LLM 提供商（仅字幕处理）」区域配置即可
+- 输出目录：默认写入 `./outputs/processed/`
+
+## 模型与缓存目录
+
+- 模型与下载缓存统一放在项目目录 `./models/` 下
+- 具体子目录结构取决于下载器：
+  - ModelScope：通常在 `./models/hub/models/<组织>/<模型名>/...`
+  - HuggingFace：通常在 `./models/huggingface/hub/...`
+
+## 常见问题
+
+- `No module named 'typer'`（Gradio 依赖缺失）：
+  - 先执行 `uv sync`，若仍报错可尝试：`uv pip install -U typer`
+- Windows + Python 3.12 安装 FunASR 相关依赖失败（`llvmlite/numba`）：
+  - 建议使用 Python 3.11（或 3.10）创建环境再安装：
 
 ```bash
-# 安装/使用指定 Python 版本（示例：3.11）
 uv python install 3.11
 uv sync --extra funasr -p 3.11
 ```
 
-如需使用 NVIDIA 显卡（CUDA）加速本地推理，可额外安装 CUDA 版 PyTorch（示例：CUDA 12.8；按你的驱动/CUDA 版本选择对应的 cuXXX）：
+- CUDA 加速（本地推理）：
+  - 可按你的 CUDA 版本安装对应的 PyTorch 轮子，例如（CUDA 12.8）：
 
 ```bash
-# 推荐：用 uv 的 PyTorch 后端选择、
 uv pip install --upgrade --torch-backend cu128 torch torchaudio
 ```
 
-如果你使用 `cu130` 这类 index-url 发现 “没有更改包”，通常是因为 PyTorch/uv 当前并没有对应的 cu130 轮子（即使你本机安装了 CUDA 13.0 Toolkit，也不代表有 cu130 的 torch 轮子），或你已安装了同版本的 torch/torchaudio。
-可用下面命令检查当前 torch 是否真正在用 CUDA：
-
-```bash
-uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
-```
-
-## Run
-
-```bash
-uv run python app.py
-# or
-# uv run --script app.py
-```
-
-Then open the printed local URL.
-
-WebUI 使用提示：
-
-- 选择「FunASR（本地推理）」时，可在「引擎配置 -> FunASR」点击「加载模型」预加载到显存/内存，减少首次转写等待。
-- 选择「Qwen3-ASR（本地推理）」时，可在「引擎配置 -> Qwen3-ASR」点击「加载模型」预加载到显存/内存，减少首次转写等待。
-- 转写过程中可点击「停止转写」发送停止信号（后台会尽快停止，已发出的请求可能仍需等待返回）。
-- 「字幕处理」Tab：可上传 `.srt/.vtt` 做字幕校正/翻译/分割；在该 Tab 的「LLM 提供商（仅字幕处理）」中配置 API Key/Base URL/模型即可。
-  - 输出文件默认写入 `./outputs/processed/`。
-
-## Notes
-
-- `imageio-ffmpeg` is used to provide an `ffmpeg` binary (no system `ffmpeg` required).
-- `silero_vad` is installed by default (it may pull in PyTorch/ONNXRuntime and is large; first install can be slow).
-- Optional: install FunASR runtime deps for local inference: `uv sync --extra funasr` (also large).
-
-- Output files are written to `./outputs/`.
+- ffmpeg：
+  - 项目使用 `imageio-ffmpeg` 提供 ffmpeg（二进制无需系统安装）
 
 ## Gradio 主题
-- [MIKU](https://huggingface.co/spaces/NoCrypt/miku)
+
+- MIKU：`https://huggingface.co/spaces/NoCrypt/miku`
+
+## 第三方说明
+
+见 `THIRD_PARTY_NOTICES.md`。
