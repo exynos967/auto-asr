@@ -16,3 +16,4 @@ models/
 VideoCaptioner/
 .worktrees/
 cache/
+tests/
