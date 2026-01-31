@@ -132,7 +132,3 @@ uv pip install --upgrade --torch-backend cu128 torch torchaudio
 ## Gradio 主题
 
 - MIKU：`https://huggingface.co/spaces/NoCrypt/miku`
-
-## 第三方说明
-
-见 `THIRD_PARTY_NOTICES.md`。
